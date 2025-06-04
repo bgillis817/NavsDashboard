@@ -14,7 +14,10 @@ library(ggrepel)
 library(readxl)
 library(rsconnect)
 
-# Define the weights for different outcomes
+# Load from GitHub
+url <- "https://raw.githubusercontent.com/bgillis817/NavsDashboard/main/NavsPAs25.csv"
+
+# Define weights
 woba_weights <- c(
   "Walk" = 0.98,
   "HitByPitch" = 0.98,
@@ -28,16 +31,38 @@ woba_weights <- c(
   "Error" = 0
 )
 
+# Read and preprocess data
+NavsPAs <- read_csv(url) %>%
+  mutate(wOBA_contribution = case_when(
+    PlayResult == "Walk" ~ woba_weights["Walk"],
+    PlayResult == "HitByPitch" ~ woba_weights["HitByPitch"],
+    PlayResult == "Single" ~ woba_weights["Single"],
+    PlayResult == "Double" ~ woba_weights["Double"],
+    PlayResult == "Triple" ~ woba_weights["Triple"],
+    PlayResult == "HomeRun" ~ woba_weights["HomeRun"],
+    PlayResult == "FieldersChoice" ~ woba_weights["FieldersChoice"],
+    PlayResult == "Sacrifice" ~ woba_weights["Sacrifice"],
+    PlayResult == "Error" ~ woba_weights["Error"],
+    TRUE ~ woba_weights["Out"]
+  )) %>%
+  arrange(Batter, PitchNo) %>%
+  group_by(Batter) %>%
+  mutate(
+    PA_count = row_number(),
+    cumulative_wOBA_sum = cumsum(wOBA_contribution),
+    cumulative_wOBA = cumulative_wOBA_sum / PA_count,
+    PA_label = paste0("PA ", PA_count)
+  ) %>%
+  ungroup()
+
 # UI
 ui <- fluidPage(
   titlePanel("2025 Navigators Hitting Report: Individual Player Analysis"),
-
   sidebarLayout(
     sidebarPanel(
-      fileInput("csv_file", "Upload NavsPAs CSV", accept = ".csv"),
-      uiOutput("playerSelector"),
+      selectInput("batter", "Select Batter", choices = sort(unique(NavsPAs$Batter))),
       uiOutput("paRangeUI"),
-      uiOutput("pitchTypeSelector"),
+      selectInput("pitchType", "Select Pitch Type", choices = c("All", unique(NavsPAs$TaggedPitchType))),
       br(),
       h4(textOutput("playerInfo"))
     ),
@@ -56,62 +81,24 @@ ui <- fluidPage(
 # Server
 server <- function(input, output, session) {
 
-  NavsPAs <- reactive({
-    req(input$csv_file)
-    data <- read_csv(input$csv_file$datapath)
-
-    data %>%
-      mutate(wOBA_contribution = case_when(
-        PlayResult == "Walk" ~ woba_weights["Walk"],
-        PlayResult == "HitByPitch" ~ woba_weights["HitByPitch"],
-        PlayResult == "Single" ~ woba_weights["Single"],
-        PlayResult == "Double" ~ woba_weights["Double"],
-        PlayResult == "Triple" ~ woba_weights["Triple"],
-        PlayResult == "HomeRun" ~ woba_weights["HomeRun"],
-        PlayResult == "FieldersChoice" ~ woba_weights["FieldersChoice"],
-        PlayResult == "Sacrifice" ~ woba_weights["Sacrifice"],
-        PlayResult == "Error" ~ woba_weights["Error"],
-        TRUE ~ woba_weights["Out"]
-      )) %>%
-      arrange(Batter, PitchNo) %>%
-      group_by(Batter) %>%
-      mutate(
-        PA_count = row_number(),
-        cumulative_wOBA_sum = cumsum(wOBA_contribution),
-        cumulative_wOBA = cumulative_wOBA_sum / PA_count,
-        PA_label = paste0("PA ", PA_count)
-      ) %>%
-      ungroup()
-  })
-
-  output$playerSelector <- renderUI({
-    req(NavsPAs())
-    selectInput("batter", "Select Batter", choices = sort(unique(NavsPAs()$Batter)))
-  })
-
-  output$pitchTypeSelector <- renderUI({
-    req(NavsPAs())
-    selectInput("pitchType", "Select Pitch Type", choices = c("All", unique(NavsPAs()$TaggedPitchType)))
+  output$playerInfo <- renderText({
+    player_data <- NavsPAs %>% filter(Batter == input$batter)
+    total_pas <- max(player_data$PA_count, na.rm = TRUE)
+    paste0("Total PAs for ", input$batter, ": ", total_pas)
   })
 
   output$paRangeUI <- renderUI({
-    req(input$batter, NavsPAs())
-    max_pa <- NavsPAs() %>% filter(Batter == input$batter) %>% summarise(max = max(PA_count)) %>% pull(max)
+    player_data <- NavsPAs %>% filter(Batter == input$batter)
+    max_pa <- max(player_data$PA_count, na.rm = TRUE)
     tagList(
       numericInput("paRangeMin", "Select Minimum PA Number", min = 1, max = max_pa, value = 1),
       numericInput("paRangeMax", "Select Maximum PA Number", min = 1, max = max_pa, value = max_pa)
     )
   })
 
-  output$playerInfo <- renderText({
-    req(input$batter, NavsPAs())
-    total_pas <- NavsPAs() %>% filter(Batter == input$batter) %>% summarise(max = max(PA_count)) %>% pull(max)
-    paste0("Total PAs for ", input$batter, ": ", total_pas)
-  })
-
   filtered_data <- reactive({
-    req(input$batter, input$paRangeMin, input$paRangeMax, NavsPAs())
-    data <- NavsPAs() %>% filter(Batter == input$batter)
+    req(input$batter, input$paRangeMin, input$paRangeMax)
+    data <- NavsPAs %>% filter(Batter == input$batter)
     if (input$pitchType != "All") {
       data <- data %>% filter(TaggedPitchType == input$pitchType)
     }
@@ -121,8 +108,8 @@ server <- function(input, output, session) {
   output$sprayChart <- renderPlot({
     data <- filtered_data()
     baseball_data <- data %>%
-      select(LastTrackedDistance, Bearing, PlayResult) %>%
-      filter(!is.na(LastTrackedDistance), !is.na(Bearing), !is.na(PlayResult))
+      dplyr::select(LastTrackedDistance, Bearing, PlayResult) %>%
+      filter(!is.na(LastTrackedDistance) & !is.na(Bearing) & !is.na(PlayResult))
 
     ggplot(baseball_data, aes(x = Bearing, y = LastTrackedDistance, color = PlayResult)) +
       annotate("rect", xmin = 45, xmax = -45, ymin = 0, ymax = Inf, fill = "grey", alpha = 0.2) +

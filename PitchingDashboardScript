@@ -1,0 +1,882 @@
+library(glue)
+library(shiny)
+library(dplyr)
+library(DT)
+library(ggplot2)
+library(gt)
+library(scales)
+library(shinyWidgets)
+library(tidyverse)
+library(readr)
+library(baseballr)
+library(cowplot)
+library(gtsummary)
+library(ggrepel)
+library(readxl)
+
+# Load the CSV files from GitHub
+Navigators2025 <- read_csv("https://raw.githubusercontent.com/bgillis817/NavsDashboard/Pitching/Navigators2025.csv") %>%
+  mutate(
+    RelHeight = substr(RelHeight, 1, nchar(RelHeight)),
+    RelHeight = as.double(RelHeight),
+    Balls = substr(Balls, 1, nchar(Balls)),
+    Balls = as.double(Balls),
+    Strikes = substr(Strikes, 1, nchar(Strikes)),
+    Strikes = as.double(Strikes),
+    # Parse the date in M/D/Y format
+    Date = as.Date(Date, format = "%m/%d/%Y")
+  )
+
+# Load additional data files 
+BACON <- read.csv("https://raw.githubusercontent.com/bgillis817/NavsDashboard/Pitching/xwOBAcon%20(1).csv")
+umpire_data <- read_csv("https://raw.githubusercontent.com/bgillis817/NavsDashboard/Pitching/called_strike.csv")
+
+# Create count variable
+Navigators2025$Count <- paste(Navigators2025$Balls, Navigators2025$Strikes, sep = "-")
+
+# Checks and CSV adjustments
+ChecksCSV <- Navigators2025 %>%
+  mutate(
+    HCheck = case_when(PlayResult %in% c('Single', 'Double', 'Triple', 'HomeRun') ~ TRUE, TRUE ~ FALSE),
+    GBCheck = case_when(TaggedHitType %in% c('GroundBall') ~ TRUE, TRUE ~ FALSE),
+    BBECheck = case_when(TaggedHitType %in% c('GroundBall', 'LineDrive', 'FlyBall', 'Popup') ~ TRUE, TRUE ~ FALSE),
+    SwingCheck = case_when(PitchCall %in% c('FoulBall', 'StrikeSwinging','InPlay') ~ TRUE, TRUE ~ FALSE),
+    WhiffCheck = case_when(PitchCall %in% c('StrikeSwinging') ~ TRUE, TRUE ~ FALSE),
+    CSWCheck = case_when(PitchCall %in% c('StrikeSwinging','StrikeCalled') ~ TRUE, TRUE ~ FALSE),
+    StrikeCheck = case_when(PitchCall %in% c('StrikeSwinging', 'FoulBall', 'InPlay','StrikeCalled') ~ TRUE, TRUE ~ FALSE),
+    ZoneCheck = case_when(between(PlateLocHeight, 1.59, 3.41) & between(PlateLocSide, -1, 1) ~ TRUE, TRUE ~ FALSE),
+    SweetSpotCheck = case_when(between(Angle, 10, 30) ~ TRUE, TRUE ~ FALSE),
+    HardHitCheck = case_when(between(ExitSpeed, 95, 120) ~ TRUE, TRUE ~ FALSE),
+    BarrelCheck = case_when(between(Angle, 10, 30) & between(ExitSpeed, 95, 120) ~ TRUE, TRUE ~ FALSE),
+    CalledStrikeCheck = case_when(PitchCall %in% c('StrikeCalled') ~ TRUE, TRUE ~ FALSE),
+    BallCheck = case_when(PitchCall %in% c('BallCalled', 'HitByPitch') ~ TRUE, TRUE ~ FALSE),
+    FoulCheck = case_when(PitchCall %in% c('FoulBall') ~ TRUE, TRUE ~ FALSE),
+    SingleCheck = case_when(PlayResult %in% c('Single') ~ TRUE, TRUE ~ FALSE),
+    DoubleCheck = case_when(PlayResult %in% c('Double') ~ TRUE, TRUE ~ FALSE),
+    TripleCheck = case_when(PlayResult %in% c('Triple') ~ TRUE, TRUE ~ FALSE),
+    HRCheck = case_when(PlayResult %in% c('HomeRun') ~ TRUE, TRUE ~ FALSE),
+    SacCheck = case_when(PlayResult %in% c('Sacrifice') ~ TRUE, TRUE ~ FALSE),
+    HBPCheck = case_when(PitchCall %in% c('HitByPitch') ~ TRUE, TRUE ~ FALSE),
+    StrikeoutCheck = case_when(KorBB %in% c('Strikeout') ~ TRUE, TRUE ~ FALSE),
+    WalkCheck = case_when(KorBB %in% c('Walk') ~ TRUE, TRUE ~ FALSE),
+    BIPCheck = case_when(PlayResult %in% c('Undefined') ~ FALSE, TRUE ~ TRUE),
+    ErrorCheck = if_else(PlayResult %in% c('Error'), TRUE, FALSE),
+    ABCheck = StrikeoutCheck + BIPCheck - SacCheck,
+    PACheck = StrikeoutCheck + WalkCheck + HBPCheck + BIPCheck
+  )
+
+# Join with xwOBACON data
+BACONCSV <- ChecksCSV %>%
+  mutate(
+    floorExitSpeed = floor(ExitSpeed),
+    floorLaunchAngle = trunc(Angle)
+  ) %>%
+  left_join(BACON, by = c("floorExitSpeed" = "launch_speed", "floorLaunchAngle" = "launch_angle"))
+
+# Join with strike expectation data
+strike_exp_data <- BACONCSV %>%
+  mutate(
+    RoundedPLH = round(PlateLocHeight, digits = 1),
+    RoundedPLS = round(PlateLocSide, digits = 1)
+  ) %>%
+  left_join(umpire_data, by = c("RoundedPLH" = "PlateLocHeight", "RoundedPLS" = "PlateLocSide"))
+
+strike_exp_diff <- strike_exp_data %>%
+  mutate(strike_exp_diff = abs(StrikeCheck - called_strike_prob))
+
+# Final data preparation
+FinalCSV <- strike_exp_diff %>%
+  mutate(
+    across("av_xwOBAcon", ~replace_na(., 0)),
+    across("strike_exp_diff", ~replace_na(., 0)),
+    xwOBAvalues = av_xwOBAcon + WalkCheck * 0.83 + HBPCheck * 0.86 + StrikeoutCheck * 0
+  )
+
+FinalCSV$GameType <- ifelse(FinalCSV$Batter == "", "Bullpen", "Intersquad")
+FinalCSV$CallType <- ifelse(strike_exp_diff$StrikeCheck & !strike_exp_diff$ZoneCheck, "Incorrect", "Correct")
+
+# Grab pitch count by individual pitcher and appearance
+FinalCSV <- FinalCSV %>%
+  arrange(Pitcher, Date, PitchNo) %>%
+  group_by(Pitcher) %>%
+  mutate(
+    # Create a unique appearance ID for each pitcher-date combination
+    AppearanceID = paste(Pitcher, Date, sep = "_"),
+    # Count total pitches for each pitcher across all appearances
+    OverallPitchCount = row_number(),
+    # Create labels for tracking
+    PitchLabel = paste0("Pitch ", OverallPitchCount),
+    DateLabel = format(Date, "%Y-%m-%d")
+  ) %>%
+  # Add appearance-specific information
+  group_by(Pitcher, Date) %>%
+  mutate(
+    AppearanceNumber = cur_group_id(),
+    PitchesInAppearance = n(),
+    AppearanceLabel = paste0("Game ", format(Date, "%m/%d"))
+  ) %>%
+  ungroup()
+
+# Print diagnostic info
+print(paste("Total number of unique pitchers:", n_distinct(FinalCSV$Pitcher)))
+print("Sample of appearances and pitch counts by pitcher:")
+FinalCSV %>% 
+  group_by(Pitcher, Date) %>% 
+  summarise(
+    Pitches_This_Game = n(),
+    First_Pitch_Overall = min(OverallPitchCount),
+    Last_Pitch_Overall = max(OverallPitchCount)
+  ) %>%
+  group_by(Pitcher) %>%
+  mutate(Total_Pitches_All_Games = sum(Pitches_This_Game)) %>%
+  print(n = 10)
+
+# UI for Shiny App
+ui <- fluidPage(
+  # Add custom CSS for image positioning
+  tags$head(
+    tags$style(HTML("
+      .logo-container {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        z-index: 1000;
+      }
+      .logo-container img {
+        height: 60px;
+        width: auto;
+      }
+      .title-panel {
+        position: relative;
+        padding-right: 80px;
+      }
+    "))
+  ),
+  
+  # Add logo container
+  div(class = "logo-container",
+      # Replace this URL with your actual Navigators logo URL
+      img(src = "https://nsnavs.com.ismmedia.com/ISM3/std-content/repos/Top/Team/Opponents/navs_logo_new.png", 
+          alt = "Navigators Logo")
+  ),
+  
+  # Title with custom class
+  div(class = "title-panel",
+      titlePanel("2025 North Shore Navigators Pitching")
+  ),
+  br(),
+  
+  sidebarLayout(
+    sidebarPanel(
+      # Pitcher selection dropdown
+      h4(textOutput("pitcherInfo")),
+      br(),
+      
+      selectInput("pitcher", "Select Pitcher", choices = sort(unique(FinalCSV$Pitcher))),
+      
+      # UI for pitch count range and dates
+      uiOutput("pitchRangeUI"),
+      
+      # Pitch type filter
+      selectInput("pitchType", "Select Pitch Type", 
+                  choices = c("All", unique(FinalCSV$TaggedPitchType))),
+      
+      # Batter side filter
+      selectInput("batterSide", "Select Batter Side", 
+                  choices = c("All", "Left", "Right")),
+      
+      # Opposing team filter
+      uiOutput("teamFilterUI"),
+      
+      # Individual batter filter
+      uiOutput("batterFilterUI")
+    ),
+    
+    mainPanel(
+      tabsetPanel(
+        tabPanel("Metrics/Results", 
+                 br(), 
+                 dataTableOutput("summary_table"),
+                 dataTableOutput("pitcher_summary_table"),
+                 dataTableOutput("pitcher_results_table"),
+                 dataTableOutput("pitcher_splits_table")),
+        tabPanel("Results By Split", 
+                 br(), 
+                 dataTableOutput("pitcher_count_results"),
+                 dataTableOutput("pitch_type_table")),
+        tabPanel("Heat Maps", 
+                 br(), 
+                 plotOutput("plot1")),
+        tabPanel("Movement/Release", 
+                 br(), 
+                 plotOutput("pitch_movement_plot"),
+                 plotOutput("pitch_release_plot")),
+        tabPanel("Locations", 
+                 br(), 
+                 plotOutput("pitch_location_plot1"),
+                 plotOutput("pitch_location_plot2"),
+                 plotOutput("pitch_location_plot3")),
+        tabPanel("Velocity/Stuff", 
+                 br(), 
+                 plotOutput("lineplot1"),
+                 plotOutput("lineplot2"))
+      )
+    )
+  )
+)
+
+# Server for Shiny App
+server <- function(input, output, session) {
+  
+  # Display pitcher info
+  output$pitcherInfo <- renderText({
+    pitcher_data <- FinalCSV %>% filter(Pitcher == input$pitcher)
+    total_pitches <- max(pitcher_data$OverallPitchCount, na.rm = TRUE)
+    total_games <- n_distinct(pitcher_data$Date)
+    paste0("Total: ", total_pitches, " pitches across ", total_games, " game(s)")
+  })
+  
+  # Dynamic UI for pitch range based on selected pitcher
+  output$pitchRangeUI <- renderUI({
+    pitcher_data <- FinalCSV %>% filter(Pitcher == input$pitcher)
+    max_pitch <- max(pitcher_data$OverallPitchCount, na.rm = TRUE)
+    
+    # Get unique dates for this pitcher
+    pitcher_dates <- sort(unique(pitcher_data$Date))
+    date_choices <- setNames(as.character(pitcher_dates), 
+                            format(pitcher_dates, "%m/%d/%Y"))
+    
+    tagList(
+      # Multiple date selection with checkboxes
+      checkboxGroupInput("dateFilter", "Select Game(s) to Include:", 
+                        choices = date_choices,
+                        selected = as.character(pitcher_dates),
+                        inline = FALSE),
+      
+      # Add select all/none buttons
+      actionButton("selectAllDates", "Select All", 
+                   style = "margin-right: 5px; margin-bottom: 10px;"),
+      actionButton("selectNoDates", "Clear All", 
+                   style = "margin-bottom: 10px;"),
+      
+      br(),
+      
+      numericInput("pitchRangeMin", "Select Minimum Pitch Number", 
+                   min = 1, max = max_pitch, value = 1),
+      numericInput("pitchRangeMax", "Select Maximum Pitch Number", 
+                   min = 1, max = max_pitch, value = max_pitch),
+      
+      # Show game-specific info
+      uiOutput("gameInfo")
+    )
+  })
+  
+  # Observe select all button
+  observeEvent(input$selectAllDates, {
+    pitcher_data <- FinalCSV %>% filter(Pitcher == input$pitcher)
+    pitcher_dates <- sort(unique(pitcher_data$Date))
+    updateCheckboxGroupInput(session, "dateFilter", 
+                           selected = as.character(pitcher_dates))
+  })
+  
+  # Observe clear all button
+  observeEvent(input$selectNoDates, {
+    updateCheckboxGroupInput(session, "dateFilter", selected = character(0))
+  })
+  
+  # Display game-specific information
+  output$gameInfo <- renderUI({
+    if (!is.null(input$dateFilter) && length(input$dateFilter) > 0) {
+      selected_dates <- as.Date(input$dateFilter)
+      pitcher_game_data <- FinalCSV %>% 
+        filter(Pitcher == input$pitcher, Date %in% selected_dates)
+      
+      # Apply team and batter filters if selected
+      if (!is.null(input$teamFilter) && input$teamFilter != "all") {
+        pitcher_game_data <- pitcher_game_data %>% filter(BatterTeam == input$teamFilter)
+      }
+      if (!is.null(input$batterFilter) && input$batterFilter != "all") {
+        pitcher_game_data <- pitcher_game_data %>% filter(Batter == input$batterFilter)
+      }
+      
+      if (nrow(pitcher_game_data) > 0) {
+        game_summary <- pitcher_game_data %>%
+          group_by(Date, BatterTeam) %>%
+          summarise(
+            pitches = n(),
+            min_overall = min(OverallPitchCount),
+            max_overall = max(OverallPitchCount),
+            .groups = 'drop'
+          ) %>%
+          mutate(date_label = paste0(format(Date, "%m/%d/%Y"), " vs ", BatterTeam))
+        
+        total_selected_pitches <- sum(game_summary$pitches)
+        
+        # Additional summary if filtering by batter
+        if (!is.null(input$batterFilter) && input$batterFilter != "all") {
+          batter_summary <- pitcher_game_data %>%
+            group_by(Batter) %>%
+            summarise(
+              PAs = n_distinct(paste(Date, PAofInning)),
+              Pitches = n(),
+              Hits = sum(HCheck, na.rm = TRUE),
+              Ks = sum(StrikeoutCheck, na.rm = TRUE),
+              BBs = sum(WalkCheck, na.rm = TRUE),
+              .groups = 'drop'
+            )
+          
+          tagList(
+            hr(),
+            h5(paste0("vs ", input$batterFilter, ": ", 
+                     batter_summary$PAs, " PAs, ",
+                     batter_summary$Pitches, " pitches")),
+            h6(paste0(batter_summary$Hits, " H, ",
+                     batter_summary$Ks, " K, ",
+                     batter_summary$BBs, " BB")),
+            br(),
+            h5(paste0("Selected Games: ", length(unique(game_summary$Date)))),
+            tags$small(
+              HTML(paste0(
+                game_summary$date_label, ": ", game_summary$pitches, " pitches",
+                collapse = "<br>"
+              ))
+            )
+          )
+        } else {
+          tagList(
+            hr(),
+            h5(paste0("Selected Games: ", length(unique(game_summary$Date)), 
+                     " (", total_selected_pitches, " total pitches)")),
+            tags$small(
+              HTML(paste0(
+                game_summary$date_label, ": ", game_summary$pitches, " pitches",
+                collapse = "<br>"
+              ))
+            )
+          )
+        }
+      }
+    } else {
+      tagList(
+        hr(),
+        h5("No games selected")
+      )
+    }
+  })
+  
+  # Reactive data filtered by pitcher and other inputs
+  filtered_data <- reactive({
+    req(input$pitcher, input$pitchRangeMin, input$pitchRangeMax)
+    
+    data <- FinalCSV %>% 
+      filter(Pitcher == input$pitcher)
+    
+    # Filter by selected dates (multi-game selection)
+    if (!is.null(input$dateFilter) && length(input$dateFilter) > 0) {
+      selected_dates <- as.Date(input$dateFilter)
+      data <- data %>% filter(Date %in% selected_dates)
+    } else {
+      # If no dates selected, return empty data
+      return(data %>% filter(FALSE))
+    }
+    
+    # Filter by pitch type if not "All"
+    if (input$pitchType != "All") {
+      data <- data %>% filter(TaggedPitchType == input$pitchType)
+    }
+    
+    # Filter by batter side if not "All"
+    if (input$batterSide != "All") {
+      data <- data %>% filter(BatterSide == input$batterSide)
+    }
+    
+    # Filter by overall pitch count range
+    data %>% 
+      filter(OverallPitchCount >= input$pitchRangeMin & OverallPitchCount <= input$pitchRangeMax)
+  })
+  
+  # Summary table
+  output$summary_table <- renderDataTable({
+    table <- filtered_data() %>%
+      summarize(
+        'Pitches' = n(),
+        PA = sum(PACheck, na.rm = TRUE),
+        BBE = sum(BBECheck, na.rm = TRUE),
+        H = sum(HCheck, na.rm = TRUE),
+        `1B` = sum(SingleCheck, na.rm = TRUE),
+        `2B` = sum(DoubleCheck, na.rm = TRUE),
+        `3B` = sum(TripleCheck, na.rm = TRUE),
+        HR = sum(HRCheck, na.rm = TRUE),
+        SO = sum(StrikeoutCheck, na.rm = TRUE),
+        BB = sum(WalkCheck, na.rm = TRUE),
+        HBP = sum(HBPCheck, na.rm = TRUE),
+        Strikes = sum(StrikeCheck, na.rm = TRUE),
+        Chases = sum(SwingCheck[ZoneCheck == FALSE], na.rm = TRUE),
+        Whiffs = sum(WhiffCheck[SwingCheck == TRUE], na.rm = TRUE)
+      )
+    
+    table[is.na(table)] <- "-"
+    datatable(table, options = list(dom = 't', columnDefs = list(list(targets = 0, visible = FALSE))))
+  })
+  
+  # Pitcher summary by pitch type
+  output$pitcher_summary_table <- renderDataTable({
+    table <- filtered_data() %>%
+      group_by('Pitch' = TaggedPitchType) %>%
+      summarize(
+        'Pitches' = n(),
+        'AvgVelo' = round(mean(RelSpeed, na.rm = TRUE), 1),
+        'MaxVelo' = round(max(RelSpeed, na.rm = TRUE), 1),
+        'SpinRate' = round(mean(SpinRate, na.rm = TRUE), 0),
+        'IVB' = round(mean(InducedVertBreak, na.rm = TRUE), 1),
+        'HB' = round(mean(HorzBreak, na.rm = TRUE), 1),
+        'RelZ' = round(mean(RelHeight, na.rm = TRUE), 1),
+        'RelX' = round(mean(RelSide, na.rm = TRUE), 1)
+      ) %>%
+      mutate(Usage = Pitches / sum(Pitches)) %>%
+      mutate(Usage = scales::percent(Usage, accuracy = 0.1)) %>%
+      select(Pitch, Pitches, Usage, AvgVelo, MaxVelo, SpinRate, IVB, HB, RelZ, RelX)
+    
+    table[is.na(table)] <- 0
+    datatable(table, options = list(dom = 't', columnDefs = list(list(targets = 0, visible = FALSE))))
+  })
+  
+  # Pitcher results by pitch type
+  output$pitcher_results_table <- renderDataTable({
+    table <- filtered_data() %>%
+      group_by('Pitch' = TaggedPitchType) %>%
+      summarize(
+        'Pitches' = n(),
+        PA = sum(PACheck, na.rm = TRUE),
+        AB = sum(ABCheck, na.rm = TRUE),
+        H = sum(HCheck, na.rm = TRUE),
+        `1B` = sum(SingleCheck, na.rm = TRUE),
+        `2B` = sum(DoubleCheck, na.rm = TRUE),
+        `3B` = sum(TripleCheck, na.rm = TRUE),
+        HR = sum(HRCheck, na.rm = TRUE),
+        TB = (`1B`) + (`2B` * 2) + (`3B` * 3) + (HR * 4),
+        SO = sum(StrikeoutCheck, na.rm = TRUE),
+        BB = sum(WalkCheck, na.rm = TRUE),
+        HBP = sum(HBPCheck, na.rm = TRUE),
+        AVG = H / AB,
+        OBP = (H + BB + HBP) / PA,
+        SLG = TB / AB
+      ) %>%
+      mutate(
+        AVG = sprintf("%.3f", AVG),
+        OBP = sprintf("%.3f", OBP),
+        SLG = sprintf("%.3f", SLG)
+      ) %>%
+      select(Pitch, Pitches, AVG, OBP, SLG)
+    
+    table[is.na(table)] <- "-"
+    datatable(table, options = list(dom = 't', columnDefs = list(list(targets = 0, visible = FALSE))))
+  })
+  
+  # Pitch type by batter side
+  output$pitch_type_table <- renderDataTable({
+    table <- filtered_data() %>%
+      group_by('Pitch' = TaggedPitchType, 'Side' = BatterSide) %>%
+      summarize(
+        'Pitches' = n(),
+        PA = sum(PACheck, na.rm = TRUE),
+        AB = sum(ABCheck, na.rm = TRUE),
+        H = sum(HCheck, na.rm = TRUE),
+        `1B` = sum(SingleCheck, na.rm = TRUE),
+        `2B` = sum(DoubleCheck, na.rm = TRUE),
+        `3B` = sum(TripleCheck, na.rm = TRUE),
+        HR = sum(HRCheck, na.rm = TRUE),
+        TB = (`1B`) + (`2B` * 2) + (`3B` * 3) + (HR * 4),
+        SO = sum(StrikeoutCheck, na.rm = TRUE),
+        BB = sum(WalkCheck, na.rm = TRUE),
+        HBP = sum(HBPCheck, na.rm = TRUE),
+        AVG = H / AB,
+        OBP = (H + BB + HBP) / PA,
+        SLG = TB / AB
+      ) %>%
+      mutate(
+        AVG = sprintf("%.3f", AVG),
+        OBP = sprintf("%.3f", OBP),
+        SLG = sprintf("%.3f", SLG)
+      ) %>%
+      select(Pitch, Side, Pitches, AVG, OBP, SLG)
+    
+    table[is.na(table)] <- "-"
+    datatable(table, options = list(dom = 't', columnDefs = list(list(targets = 0, visible = FALSE))))
+  })
+  
+  # Pitcher splits by batter side
+  output$pitcher_splits_table <- renderDataTable({
+    table <- filtered_data() %>%
+      group_by('Side' = BatterSide) %>%
+      summarize(
+        'Pitches' = n(),
+        PA = sum(PACheck, na.rm = TRUE),
+        AB = sum(ABCheck, na.rm = TRUE),
+        H = sum(HCheck, na.rm = TRUE),
+        `1B` = sum(SingleCheck, na.rm = TRUE),
+        `2B` = sum(DoubleCheck, na.rm = TRUE),
+        `3B` = sum(TripleCheck, na.rm = TRUE),
+        HR = sum(HRCheck, na.rm = TRUE),
+        TB = (`1B`) + (`2B` * 2) + (`3B` * 3) + (HR * 4),
+        SO = sum(StrikeoutCheck, na.rm = TRUE),
+        BB = sum(WalkCheck, na.rm = TRUE),
+        HBP = sum(HBPCheck, na.rm = TRUE),
+        AVG = H / AB,
+        OBP = (H + BB + HBP) / PA,
+        SLG = TB / AB
+      ) %>%
+      mutate(
+        AVG = sprintf("%.3f", AVG),
+        OBP = sprintf("%.3f", OBP),
+        SLG = sprintf("%.3f", SLG)
+      ) %>%
+      select(Side, Pitches, AVG, OBP, SLG)
+    
+    table[is.na(table)] <- "-"
+    datatable(table, options = list(dom = 't', columnDefs = list(list(targets = 0, visible = FALSE))))
+  })
+  
+  # Results by count
+  output$pitcher_count_results <- renderDataTable({
+    table <- filtered_data() %>%
+      group_by(Count) %>%
+      summarize(
+        'Pitches' = n(),
+        PA = sum(PACheck, na.rm = TRUE),
+        AB = sum(ABCheck, na.rm = TRUE),
+        H = sum(HCheck, na.rm = TRUE),
+        `1B` = sum(SingleCheck, na.rm = TRUE),
+        `2B` = sum(DoubleCheck, na.rm = TRUE),
+        `3B` = sum(TripleCheck, na.rm = TRUE),
+        HR = sum(HRCheck, na.rm = TRUE),
+        TB = (`1B`) + (`2B` * 2) + (`3B` * 3) + (HR * 4),
+        SO = sum(StrikeoutCheck, na.rm = TRUE),
+        BB = sum(WalkCheck, na.rm = TRUE),
+        HBP = sum(HBPCheck, na.rm = TRUE),
+        AVG = H / AB,
+        OBP = (H + BB + HBP) / PA,
+        SLG = TB / AB
+      ) %>%
+      mutate(
+        AVG = sprintf("%.3f", AVG),
+        OBP = sprintf("%.3f", OBP),
+        SLG = sprintf("%.3f", SLG)
+      ) %>%
+      select(Count, Pitches, AVG, OBP, SLG)
+    
+    table[is.na(table)] <- "-"
+    datatable(table, options = list(dom = 't', pageLength = nrow(table), columnDefs = list(list(targets = 0, visible = FALSE))))
+  })
+  
+  # Pitch movement plot
+  output$pitch_movement_plot <- renderPlot({
+    ggplot(data = filtered_data(), aes(x = HorzBreak, y = InducedVertBreak, color = TaggedPitchType)) +
+      labs(x = "Horizontal Movement (HB)", y = "Vertical Movement (IVB)", 
+           color = "Pitch Type", 
+           title = paste(input$pitcher, "- Pitch Movement")) +
+      xlim(-30, 30) + ylim(-30, 30) +
+      geom_segment(aes(x = 0, y = -25, xend = 0, yend = 25), size = 1, color = "grey55") +
+      geom_segment(aes(x = -25, y = 0, xend = 25, yend = 0), size = 1, color = "grey55") +
+      geom_point(size = 3, na.rm = TRUE) +
+      theme_bw() + 
+      theme(plot.title = element_text(size = 16, face = "bold", hjust = 0.5)) +
+      theme(legend.position = "bottom", legend.text = element_text(size = 12), 
+            axis.title = element_text(size = 14))
+  }, width = 450, height = 400)
+  
+  # Pitch release plot
+  output$pitch_release_plot <- renderPlot({
+    ggplot(data = filtered_data(), aes(x = RelSide, y = RelHeight, color = TaggedPitchType)) +
+      labs(x = "Horizontal Release Point", y = "Vertical Release Point", 
+           color = " ", 
+           title = paste(input$pitcher, "- Release Points")) +
+      xlim(-4, 4) + ylim(2, 7) +
+      geom_segment(aes(x = 0, y = -25, xend = 0, yend = 25), size = 1, color = "grey55") +
+      geom_segment(aes(x = -25, y = 0, xend = 25, yend = 0), size = 1, color = "grey55") +
+      geom_point(size = 3, na.rm = TRUE) +
+      theme_bw() + 
+      theme(plot.title = element_text(size = 16, face = "bold", hjust = 0.5)) +
+      theme(legend.position = "bottom", legend.text = element_text(size = 12), 
+            axis.title = element_text(size = 14))
+  }, width = 450, height = 400)
+  
+  # Pitch location plots
+  output$pitch_location_plot1 <- renderPlot({
+    ggplot(data = filtered_data(), aes(x = PlateLocSide, y = PlateLocHeight, color = TaggedPitchType)) +
+      labs(x = "Horizontal Location", y = "Vertical Location", 
+           color = " ", 
+           title = paste(input$pitcher, "- Location (All)"), 
+           subtitle = "From the Pitcher's Perspective") +
+      geom_point(size = 3) +
+      annotate("rect", xmin = -1, xmax = 1, ymin = 1.6, ymax = 3.4,
+               fill = NA, color = "black", alpha = .1) +
+      ylim(1, 4) + xlim(-1.8, 1.8) + 
+      theme_bw() +
+      theme(plot.title = element_text(size = 16, face = "bold", hjust = 0.5)) +
+      theme(legend.position = "bottom", legend.text = element_text(size = 12), 
+            axis.title = element_text(size = 14))
+  }, width = 400, height = 350)
+  
+  output$pitch_location_plot2 <- renderPlot({
+    data_lhb <- filtered_data() %>% filter(BatterSide == "Left")
+    
+    ggplot(data = data_lhb, aes(x = PlateLocSide, y = PlateLocHeight, color = TaggedPitchType)) +
+      labs(x = "Horizontal Location", y = "Vertical Location", 
+           color = " ", 
+           title = paste(input$pitcher, "- Location (LHB)"), 
+           subtitle = "From the Pitcher's Perspective") +
+      geom_point(size = 3) +
+      annotate("rect", xmin = -1, xmax = 1, ymin = 1.6, ymax = 3.4,
+               fill = NA, color = "black", alpha = .1) +
+      ylim(1, 4) + xlim(-1.8, 1.8) + 
+      theme_bw() +
+      theme(plot.title = element_text(size = 16, face = "bold", hjust = 0.5)) +
+      theme(legend.position = "bottom", legend.text = element_text(size = 12), 
+            axis.title = element_text(size = 14))
+  }, width = 400, height = 350)
+  
+  output$pitch_location_plot3 <- renderPlot({
+    data_rhb <- filtered_data() %>% filter(BatterSide == "Right")
+    
+    ggplot(data = data_rhb, aes(x = PlateLocSide, y = PlateLocHeight, color = TaggedPitchType)) +
+      labs(x = "Horizontal Location", y = "Vertical Location", 
+           color = " ", 
+           title = paste(input$pitcher, "- Location (RHB)"), 
+           subtitle = "From the Pitcher's Perspective") +
+      geom_point(size = 3) +
+      annotate("rect", xmin = -1, xmax = 1, ymin = 1.6, ymax = 3.4,
+               fill = NA, color = "black", alpha = .1) +
+      ylim(1, 4) + xlim(-1.8, 1.8) + 
+      theme_bw() +
+      theme(plot.title = element_text(size = 16, face = "bold", hjust = 0.5)) +
+      theme(legend.position = "bottom", legend.text = element_text(size = 12), 
+            axis.title = element_text(size = 14))
+  }, width = 400, height = 350)
+  
+  # Velocity over time
+  output$lineplot1 <- renderPlot({
+    data_with_pitch_no <- filtered_data() %>% arrange(Date, PitchNo)
+    
+    if (nrow(data_with_pitch_no) == 0) {
+      ggplot() + 
+        labs(title = "No data available for selected filters")
+      return()
+    }
+    
+    # Create pitch type specific numbering
+    data_with_pitch_no <- data_with_pitch_no %>%
+      group_by(TaggedPitchType) %>%
+      mutate(
+        PitchTypeCount = row_number(),
+        PitchTypeLabel = paste0(TaggedPitchType, " #", PitchTypeCount)
+      ) %>%
+      ungroup()
+    
+    # Get unique pitch types for this pitcher
+    pitch_types <- unique(data_with_pitch_no$TaggedPitchType)
+    n_types <- length(pitch_types)
+    
+    # Create the base plot
+    p <- ggplot(data_with_pitch_no, aes(x = OverallPitchCount, y = RelSpeed, 
+                                         color = TaggedPitchType, 
+                                         group = TaggedPitchType)) +
+      geom_line(size = 2, alpha = 0.8) +
+      geom_point(size = 3, alpha = 0.9) +
+      labs(x = "Overall Pitch Count", 
+           y = "Pitch Velocity (MPH)", 
+           title = paste(input$pitcher, "- Pitch Velocity by Type"), 
+           subtitle = paste("Games:", paste(format(unique(data_with_pitch_no$Date), "%m/%d"), collapse = ", ")),
+           color = "Pitch Type") +
+      scale_y_continuous(limits = c(
+        min(data_with_pitch_no$RelSpeed, na.rm = TRUE) - 2,
+        max(data_with_pitch_no$RelSpeed, na.rm = TRUE) + 2
+      )) +
+      theme_bw() +
+      theme(
+        legend.position = "bottom",
+        legend.direction = "horizontal",
+        plot.title = element_text(hjust = 0.5, face = "bold", size = 16),
+        plot.subtitle = element_text(hjust = 0.5, size = 12),
+        axis.title = element_text(size = 14), 
+        axis.text = element_text(size = 12),
+        legend.text = element_text(size = 11),
+        legend.title = element_text(size = 12, face = "bold")
+      )
+    
+    # Add annotations for pitch type counts
+    pitch_summary <- data_with_pitch_no %>%
+      group_by(TaggedPitchType) %>%
+      summarise(
+        count = n(),
+        avg_velo = round(mean(RelSpeed, na.rm = TRUE), 1),
+        last_pitch = max(OverallPitchCount)
+      ) %>%
+      mutate(label = paste0(TaggedPitchType, "\n", count, " pitches\n", avg_velo, " mph"))
+    
+    # Add text annotations at the end of each line
+    for(i in 1:nrow(pitch_summary)) {
+      last_point <- data_with_pitch_no %>%
+        filter(TaggedPitchType == pitch_summary$TaggedPitchType[i]) %>%
+        filter(OverallPitchCount == max(OverallPitchCount)) %>%
+        slice(1)
+      
+      p <- p + annotate("text", 
+                       x = last_point$OverallPitchCount + 1, 
+                       y = last_point$RelSpeed,
+                       label = paste0(pitch_summary$avg_velo[i], " avg"),
+                       size = 3,
+                       hjust = 0)
+    }
+    
+    # Add game separators if multiple games
+    if (length(unique(data_with_pitch_no$Date)) > 1) {
+      game_boundaries <- data_with_pitch_no %>%
+        group_by(Date) %>%
+        summarise(
+          start = min(OverallPitchCount),
+          end = max(OverallPitchCount),
+          label = format(Date[1], "%m/%d")
+        )
+      
+      for (i in 2:nrow(game_boundaries)) {
+        p <- p + geom_vline(xintercept = game_boundaries$start[i] - 0.5, 
+                           linetype = "dashed", alpha = 0.3, color = "gray50")
+      }
+    }
+    
+    p
+  }, width = 900, height = 400)
+  
+  # Spin rate over time
+  output$lineplot2 <- renderPlot({
+    data_with_pitch_no <- filtered_data() %>% arrange(Date, PitchNo)
+    
+    if (nrow(data_with_pitch_no) == 0) {
+      ggplot() + 
+        labs(title = "No data available for selected filters")
+      return()
+    }
+    
+    # Create pitch type specific numbering
+    data_with_pitch_no <- data_with_pitch_no %>%
+      group_by(TaggedPitchType) %>%
+      mutate(
+        PitchTypeCount = row_number(),
+        PitchTypeLabel = paste0(TaggedPitchType, " #", PitchTypeCount)
+      ) %>%
+      ungroup()
+    
+    # Get unique pitch types
+    pitch_types <- unique(data_with_pitch_no$TaggedPitchType)
+    
+    # Create the base plot
+    p <- ggplot(data = data_with_pitch_no, aes(x = OverallPitchCount, y = SpinRate, 
+                                                color = TaggedPitchType,
+                                                group = TaggedPitchType)) +
+      geom_line(size = 2, alpha = 0.8) +
+      geom_point(size = 3, alpha = 0.9) +
+      labs(x = "Overall Pitch Count", 
+           y = "Spin Rate (RPM)", 
+           color = "Pitch Type", 
+           title = paste(input$pitcher, "- Spin Rate by Type"),
+           subtitle = paste("Games:", paste(format(unique(data_with_pitch_no$Date), "%m/%d"), collapse = ", "))) +
+      scale_y_continuous(limits = c(
+        min(data_with_pitch_no$SpinRate, na.rm = TRUE) - 100,
+        max(data_with_pitch_no$SpinRate, na.rm = TRUE) + 100
+      )) +
+      theme_bw() +
+      theme(
+        plot.title = element_text(size = 16, face = "bold", hjust = 0.5), 
+        plot.subtitle = element_text(hjust = 0.5, size = 12),
+        axis.text = element_text(size = 12),
+        legend.position = "bottom",
+        legend.direction = "horizontal",
+        legend.text = element_text(size = 11), 
+        legend.title = element_text(size = 12, face = "bold"),
+        axis.title = element_text(size = 14)
+      )
+    
+    # Add annotations for average spin rates
+    spin_summary <- data_with_pitch_no %>%
+      group_by(TaggedPitchType) %>%
+      summarise(
+        count = n(),
+        avg_spin = round(mean(SpinRate, na.rm = TRUE), 0),
+        last_pitch = max(OverallPitchCount)
+      )
+    
+    # Add text annotations at the end of each line
+    for(i in 1:nrow(spin_summary)) {
+      last_point <- data_with_pitch_no %>%
+        filter(TaggedPitchType == spin_summary$TaggedPitchType[i]) %>%
+        filter(OverallPitchCount == max(OverallPitchCount)) %>%
+        slice(1)
+      
+      p <- p + annotate("text", 
+                       x = last_point$OverallPitchCount + 1, 
+                       y = last_point$SpinRate,
+                       label = paste0(spin_summary$avg_spin[i], " avg"),
+                       size = 3,
+                       hjust = 0)
+    }
+    
+    # Add game separators if multiple games
+    if (length(unique(data_with_pitch_no$Date)) > 1) {
+      game_boundaries <- data_with_pitch_no %>%
+        group_by(Date) %>%
+        summarise(
+          start = min(OverallPitchCount),
+          end = max(OverallPitchCount),
+          label = format(Date[1], "%m/%d")
+        )
+      
+      for (i in 2:nrow(game_boundaries)) {
+        p <- p + geom_vline(xintercept = game_boundaries$start[i] - 0.5, 
+                           linetype = "dashed", alpha = 0.3, color = "gray50")
+      }
+    }
+    
+    # Add pitch type breakdown box
+    pitch_breakdown <- data_with_pitch_no %>%
+      group_by(TaggedPitchType) %>%
+      summarise(
+        Count = n(),
+        `Avg Spin` = round(mean(SpinRate, na.rm = TRUE), 0),
+        `Max Spin` = round(max(SpinRate, na.rm = TRUE), 0),
+        `Min Spin` = round(min(SpinRate, na.rm = TRUE), 0)
+      ) %>%
+      arrange(desc(Count))
+    
+    # Create summary text for the plot
+    breakdown_text <- paste(
+      capture.output(
+        print(pitch_breakdown, n = Inf, width = Inf)
+      ), 
+      collapse = "\n"
+    )
+    
+    p
+  }, width = 900, height = 400)
+  
+  # Heat map
+  output$plot1 <- renderPlot({
+    ggplot(filtered_data(), aes(x = PlateLocSide, y = PlateLocHeight)) +
+      stat_density_2d(aes(fill = ..density..), geom = 'raster', contour = FALSE) +
+      scale_fill_gradientn(colours = c("blue", "white", "red")) +
+      annotate("rect", xmin = -1, xmax = 1, ymin = 1.6, ymax = 3.4,
+               fill = NA, color = "black", alpha = .1) +
+      ylim(1, 4) + xlim(-1.8, 1.8) +
+      theme_bw() +
+      theme_classic() +
+      xlab("Horizontal Pitch Location") +
+      ylab("Vertical Pitch Location") +
+      ggtitle(paste(input$pitcher, "- Pitch Location Heat Map"), 
+              subtitle = "Pitcher's Perspective") +
+      facet_wrap(~TaggedPitchType, ncol = 3) +
+      guides(fill = FALSE)
+  }, width = 700, height = 400)
+}
+
+# Run the Shiny app
+shinyApp(ui = ui, server = server)

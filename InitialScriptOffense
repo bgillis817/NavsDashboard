@@ -1,0 +1,227 @@
+library(shiny)
+library(dplyr)
+library(DT)
+library(ggplot2)
+library(gt)
+library(scales)
+library(shinyWidgets)
+library(tidyverse)
+library(readr)
+library(baseballr)
+library(cowplot)
+library(gtsummary)
+library(ggrepel)
+library(readxl)
+library(rsconnect)
+
+# Load from GitHub
+url <- "https://raw.githubusercontent.com/bgillis817/NavsDashboard/main/NavsPAs25.csv"
+
+# Define weights
+woba_weights <- c(
+  "Walk" = 0.98,
+  "HitByPitch" = 0.98,
+  "Single" = 1.3,
+  "Double" = 1.68,
+  "Triple" = 1.94,
+  "HomeRun" = 2.35,
+  "Out" = 0,
+  "FieldersChoice" = 0,
+  "Sacrifice" = 0,
+  "Error" = 0
+)
+
+# Read and preprocess data
+NavsPAs <- read_csv(url) %>%
+  mutate(wOBA_contribution = case_when(
+    PlayResult == "Walk" ~ woba_weights["Walk"],
+    PlayResult == "HitByPitch" ~ woba_weights["HitByPitch"],
+    PlayResult == "Single" ~ woba_weights["Single"],
+    PlayResult == "Double" ~ woba_weights["Double"],
+    PlayResult == "Triple" ~ woba_weights["Triple"],
+    PlayResult == "HomeRun" ~ woba_weights["HomeRun"],
+    PlayResult == "FieldersChoice" ~ woba_weights["FieldersChoice"],
+    PlayResult == "Sacrifice" ~ woba_weights["Sacrifice"],
+    PlayResult == "Error" ~ woba_weights["Error"],
+    TRUE ~ woba_weights["Out"]
+  )) %>%
+  arrange(Batter, PitchNo) %>%
+  group_by(Batter) %>%
+  mutate(
+    PA_count = row_number(),
+    cumulative_wOBA_sum = cumsum(wOBA_contribution),
+    cumulative_wOBA = cumulative_wOBA_sum / PA_count,
+    PA_label = paste0("PA ", PA_count)
+  ) %>%
+  ungroup()
+
+# UI
+ui <- fluidPage(
+  tags$head(
+    tags$style(HTML("
+      .header-container {
+        display: flex;
+        align-items: center;
+        padding: 10px 10px 0px 10px;
+      }
+      .header-container img {
+        height: 80px;
+        margin-right: 15px;
+      }
+    "))
+  ),
+
+  div(class = "header-container",
+      tags$img(src = "https://nsnavs.com.ismmedia.com/ISM3/std-content/repos/Top/Team/Opponents/navs_logo_new.png"),
+      h1("2025 Navigators Hitting Report: Individual Player Analysis")
+  ),
+
+  sidebarLayout(
+    sidebarPanel(
+      selectInput("batter", "Select Batter", choices = sort(unique(NavsPAs$Batter))),
+      uiOutput("paRangeUI"),
+      selectInput("pitchType", "Select Pitch Type", choices = c("All", unique(NavsPAs$TaggedPitchType))),
+      br(),
+      h4(textOutput("playerInfo"))
+    ),
+    mainPanel(
+      tabsetPanel(
+        tabPanel("Spray Chart", plotOutput("sprayChart")),
+        tabPanel("Rolling wOBA", plotOutput("wobaPlot")),
+        tabPanel("Stats by Pitch Type", dataTableOutput("pitchTypeTable")),
+        tabPanel("Righty/Lefty Splits", dataTableOutput("splitsTable")),
+        tabPanel("Pitch Type by Right/Left", dataTableOutput("splitsByPitchTable"))
+      )
+    )
+  )
+)
+
+# Server
+server <- function(input, output, session) {
+
+  output$playerInfo <- renderText({
+    player_data <- NavsPAs %>% filter(Batter == input$batter)
+    total_pas <- max(player_data$PA_count, na.rm = TRUE)
+    paste0("Total PAs for ", input$batter, ": ", total_pas)
+  })
+
+  output$paRangeUI <- renderUI({
+    player_data <- NavsPAs %>% filter(Batter == input$batter)
+    max_pa <- max(player_data$PA_count, na.rm = TRUE)
+    tagList(
+      numericInput("paRangeMin", "Select Minimum PA Number", min = 1, max = max_pa, value = 1),
+      numericInput("paRangeMax", "Select Maximum PA Number", min = 1, max = max_pa, value = max_pa)
+    )
+  })
+
+  filtered_data <- reactive({
+    req(input$batter, input$paRangeMin, input$paRangeMax)
+    data <- NavsPAs %>% filter(Batter == input$batter)
+    if (input$pitchType != "All") {
+      data <- data %>% filter(TaggedPitchType == input$pitchType)
+    }
+    data %>% filter(PA_count >= input$paRangeMin & PA_count <= input$paRangeMax)
+  })
+
+  output$sprayChart <- renderPlot({
+    data <- filtered_data()
+    baseball_data <- data %>%
+      dplyr::select(LastTrackedDistance, Bearing, PlayResult) %>%
+      filter(!is.na(LastTrackedDistance) & !is.na(Bearing) & !is.na(PlayResult))
+
+    ggplot(baseball_data, aes(x = Bearing, y = LastTrackedDistance, color = PlayResult)) +
+      annotate("rect", xmin = 45, xmax = -45, ymin = 0, ymax = Inf, fill = "grey", alpha = 0.2) +
+      annotate("text", x = rep(50, 4), y = c(100, 200, 300, 400), label = c("100", "200", "300", "400")) +
+      annotate("segment", x = rep(-45, 4), xend = rep(45, 4), y = c(100, 200, 300, 400), yend = c(100, 200, 300, 400), linetype = "dotted") +
+      geom_point(size = 3) +
+      coord_polar(theta = "x", start = pi, clip = "on") +
+      theme_void() +
+      scale_y_continuous(breaks = seq(0, 1, by = 0.05)) +
+      scale_x_continuous(limits = c(-180, 180), breaks = c(-45, -22.5, 0, 22.5, 45)) +
+      scale_color_manual(values = c(
+        "Single" = "blue", "Double" = "green", "HomeRun" = "red", "Out" = "orange",
+        "Triple" = "purple", "FieldersChoice" = "yellow", "Sacrifice" = "cyan", "Error" = "brown"
+      )) +
+      labs(title = paste(input$batter, "Spray Chart"), subtitle = "Color-coded by Play Result", color = "Play Result")
+  })
+
+  output$wobaPlot <- renderPlot({
+    data <- filtered_data() %>% arrange(PA_count)
+    if (nrow(data) == 0 || all(is.na(data$cumulative_wOBA)) || !any(is.finite(data$cumulative_wOBA))) {
+      ggplot() + labs(title = "No valid data for selected range", x = "PA", y = "wOBA")
+    } else {
+      valid_data <- data %>% filter(is.finite(cumulative_wOBA))
+      ggplot(valid_data, aes(x = PA_count, y = cumulative_wOBA)) +
+        geom_line(color = "orange", size = 1) +
+        geom_point(color = "orange", size = 2) +
+        labs(title = paste(input$batter, "Rolling wOBA"), x = "Plate Appearance", y = "wOBA") +
+        theme_classic()
+    }
+  })
+
+  output$pitchTypeTable <- renderDataTable({
+    data <- filtered_data() %>%
+      group_by(TaggedPitchType) %>%
+      summarize(
+        PA = n(),
+        Hits = sum(PlayResult %in% c("Single", "Double", "Triple", "HomeRun")),
+        Singles = sum(PlayResult == "Single"),
+        Doubles = sum(PlayResult == "Double"),
+        Triples = sum(PlayResult == "Triple"),
+        HomeRuns = sum(PlayResult == "HomeRun"),
+        Walks = sum(PlayResult == "Walk"),
+        HBP = sum(PlayResult == "HitByPitch"),
+        AB = PA - Walks - HBP,
+        TB = Singles + 2 * Doubles + 3 * Triples + 4 * HomeRuns,
+        BA = ifelse(AB > 0, Hits / AB, NA),
+        OBP = ifelse(PA > 0, (Hits + Walks + HBP) / PA, NA),
+        SLG = ifelse(AB > 0, TB / AB, NA)
+      ) %>% filter(AB > 0)
+    datatable(data)
+  })
+
+  output$splitsTable <- renderDataTable({
+    data <- filtered_data() %>%
+      group_by(PitcherThrows) %>%
+      summarize(
+        PA = n(),
+        Hits = sum(PlayResult %in% c("Single", "Double", "Triple", "HomeRun")),
+        Singles = sum(PlayResult == "Single"),
+        Doubles = sum(PlayResult == "Double"),
+        Triples = sum(PlayResult == "Triple"),
+        HomeRuns = sum(PlayResult == "HomeRun"),
+        Walks = sum(PlayResult == "Walk"),
+        HBP = sum(PlayResult == "HitByPitch"),
+        AB = PA - Walks - HBP,
+        TB = Singles + 2 * Doubles + 3 * Triples + 4 * HomeRuns,
+        BA = ifelse(AB > 0, Hits / AB, NA),
+        OBP = ifelse(PA > 0, (Hits + Walks + HBP) / PA, NA),
+        SLG = ifelse(AB > 0, TB / AB, NA)
+      ) %>% filter(AB > 0)
+    datatable(data)
+  })
+
+  output$splitsByPitchTable <- renderDataTable({
+    data <- filtered_data() %>%
+      group_by(PitcherThrows, TaggedPitchType) %>%
+      summarize(
+        PA = n(),
+        Hits = sum(PlayResult %in% c("Single", "Double", "Triple", "HomeRun")),
+        Singles = sum(PlayResult == "Single"),
+        Doubles = sum(PlayResult == "Double"),
+        Triples = sum(PlayResult == "Triple"),
+        HomeRuns = sum(PlayResult == "HomeRun"),
+        Walks = sum(PlayResult == "Walk"),
+        HBP = sum(PlayResult == "HitByPitch"),
+        AB = PA - Walks - HBP,
+        TB = Singles + 2 * Doubles + 3 * Triples + 4 * HomeRuns,
+        BA = ifelse(AB > 0, Hits / AB, NA),
+        OBP = ifelse(PA > 0, (Hits + Walks + HBP) / PA, NA),
+        SLG = ifelse(AB > 0, TB / AB, NA)
+      ) %>% filter(AB > 0)
+    datatable(data)
+  })
+}
+
+# Run app
+shinyApp(ui = ui, server = server)

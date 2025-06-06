@@ -14,7 +14,7 @@ library(gtsummary)
 library(ggrepel)
 library(readxl)
 
-# Load the CSV files from GitHub
+# Load the CSV files from GitHub (using raw content URLs)
 Navigators2025 <- read_csv("https://raw.githubusercontent.com/bgillis817/NavsDashboard/Pitching/Navigators2025.csv") %>%
   mutate(
     RelHeight = substr(RelHeight, 1, nchar(RelHeight)),
@@ -27,7 +27,7 @@ Navigators2025 <- read_csv("https://raw.githubusercontent.com/bgillis817/NavsDas
     Date = as.Date(Date, format = "%m/%d/%Y")
   )
 
-# Load additional data files 
+# Load additional data files from GitHub
 BACON <- read.csv("https://raw.githubusercontent.com/bgillis817/NavsDashboard/Pitching/xwOBAcon%20(1).csv")
 umpire_data <- read_csv("https://raw.githubusercontent.com/bgillis817/NavsDashboard/Pitching/called_strike.csv")
 
@@ -65,7 +65,7 @@ ChecksCSV <- Navigators2025 %>%
     PACheck = StrikeoutCheck + WalkCheck + HBPCheck + BIPCheck
   )
 
-# Join with xwOBACON data
+# Join with BACON data
 BACONCSV <- ChecksCSV %>%
   mutate(
     floorExitSpeed = floor(ExitSpeed),
@@ -95,7 +95,7 @@ FinalCSV <- strike_exp_diff %>%
 FinalCSV$GameType <- ifelse(FinalCSV$Batter == "", "Bullpen", "Intersquad")
 FinalCSV$CallType <- ifelse(strike_exp_diff$StrikeCheck & !strike_exp_diff$ZoneCheck, "Incorrect", "Correct")
 
-# Grab pitch count by individual pitcher and appearance
+# Calculate pitch count by individual pitcher and appearance
 FinalCSV <- FinalCSV %>%
   arrange(Pitcher, Date, PitchNo) %>%
   group_by(Pitcher) %>%
@@ -139,30 +139,36 @@ ui <- fluidPage(
       .logo-container {
         position: absolute;
         top: 10px;
-        right: 10px;
+        left: 10px;
         z-index: 1000;
       }
       .logo-container img {
-        height: 60px;
+        height: 50px;
         width: auto;
       }
       .title-panel {
         position: relative;
-        padding-right: 80px;
+        padding-left: 70px;
+      }
+      .title-panel h2 {
+        font-family: 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+        font-weight: 600;
+        color: #2c3e50;
+        letter-spacing: 0.5px;
       }
     "))
   ),
   
   # Add logo container
   div(class = "logo-container",
-      # Replace this URL with your actual Navigators logo URL
+      # Updated with the actual Navigators logo URL
       img(src = "https://nsnavs.com.ismmedia.com/ISM3/std-content/repos/Top/Team/Opponents/navs_logo_new.png", 
           alt = "Navigators Logo")
   ),
   
   # Title with custom class
   div(class = "title-panel",
-      titlePanel("2025 North Shore Navigators Pitching")
+      titlePanel("2025 Navigators Pitching Report: Individual Pitcher Analysis")
   ),
   br(),
   
@@ -174,7 +180,7 @@ ui <- fluidPage(
       
       selectInput("pitcher", "Select Pitcher", choices = sort(unique(FinalCSV$Pitcher))),
       
-      # UI for pitch count range and dates
+      # Dynamic UI for pitch count range and dates
       uiOutput("pitchRangeUI"),
       
       # Pitch type filter
@@ -218,8 +224,9 @@ ui <- fluidPage(
                  plotOutput("pitch_location_plot3")),
         tabPanel("Velocity/Stuff", 
                  br(), 
-                 plotOutput("lineplot1"),
-                 plotOutput("lineplot2"))
+                 plotOutput("lineplot1", height = "350px"),
+                 br(),
+                 plotOutput("lineplot2", height = "350px"))
       )
     )
   )
@@ -664,89 +671,86 @@ server <- function(input, output, session) {
       return()
     }
     
-    # Create pitch type specific numbering
+    # Create separate continuous numbering for each pitch type
     data_with_pitch_no <- data_with_pitch_no %>%
       group_by(TaggedPitchType) %>%
+      arrange(Date, PitchNo) %>%
       mutate(
-        PitchTypeCount = row_number(),
-        PitchTypeLabel = paste0(TaggedPitchType, " #", PitchTypeCount)
+        PitchTypeIndex = row_number() - 1  # Start from 0
       ) %>%
       ungroup()
     
-    # Get unique pitch types for this pitcher
-    pitch_types <- unique(data_with_pitch_no$TaggedPitchType)
-    n_types <- length(pitch_types)
+    # Get unique pitch types for consistent coloring
+    pitch_types <- sort(unique(data_with_pitch_no$TaggedPitchType))
     
-    # Create the base plot
-    p <- ggplot(data_with_pitch_no, aes(x = OverallPitchCount, y = RelSpeed, 
-                                         color = TaggedPitchType, 
-                                         group = TaggedPitchType)) +
-      geom_line(size = 2, alpha = 0.8) +
-      geom_point(size = 3, alpha = 0.9) +
-      labs(x = "Overall Pitch Count", 
-           y = "Pitch Velocity (MPH)", 
-           title = paste(input$pitcher, "- Pitch Velocity by Type"), 
-           subtitle = paste("Games:", paste(format(unique(data_with_pitch_no$Date), "%m/%d"), collapse = ", ")),
-           color = "Pitch Type") +
-      scale_y_continuous(limits = c(
-        min(data_with_pitch_no$RelSpeed, na.rm = TRUE) - 2,
-        max(data_with_pitch_no$RelSpeed, na.rm = TRUE) + 2
-      )) +
-      theme_bw() +
-      theme(
-        legend.position = "bottom",
-        legend.direction = "horizontal",
-        plot.title = element_text(hjust = 0.5, face = "bold", size = 16),
-        plot.subtitle = element_text(hjust = 0.5, size = 12),
-        axis.title = element_text(size = 14), 
-        axis.text = element_text(size = 12),
-        legend.text = element_text(size = 11),
-        legend.title = element_text(size = 12, face = "bold")
-      )
+    # Create a color palette
+    colors <- c("#FF6B6B", "#4ECDC4", "#45B7D1", "#96CEB4", "#FECA57", "#48D1CC", "#FA8072")
+    pitch_colors <- setNames(colors[1:length(pitch_types)], pitch_types)
     
-    # Add annotations for pitch type counts
+    # Find the maximum index across all pitch types for consistent x-axis
+    max_index <- max(data_with_pitch_no$PitchTypeIndex)
+    
+    # Calculate summary statistics for each pitch type
     pitch_summary <- data_with_pitch_no %>%
       group_by(TaggedPitchType) %>%
       summarise(
         count = n(),
         avg_velo = round(mean(RelSpeed, na.rm = TRUE), 1),
-        last_pitch = max(OverallPitchCount)
+        min_velo = round(min(RelSpeed, na.rm = TRUE), 1),
+        max_velo = round(max(RelSpeed, na.rm = TRUE), 1),
+        last_index = max(PitchTypeIndex),
+        last_velo = last(RelSpeed),
+        .groups = 'drop'
       ) %>%
-      mutate(label = paste0(TaggedPitchType, "\n", count, " pitches\n", avg_velo, " mph"))
+      mutate(
+        range_text = paste0(avg_velo, " mph\n(", min_velo, "-", max_velo, ")")
+      )
     
-    # Add text annotations at the end of each line
+    # Create the plot with continuous lines for each pitch type
+    p <- ggplot(data_with_pitch_no, aes(x = PitchTypeIndex, y = RelSpeed, 
+                                         color = TaggedPitchType)) +
+      # Add lines connecting all points of same pitch type
+      geom_line(size = 2, alpha = 0.8) +
+      # Add individual pitch points
+      geom_point(size = 2, alpha = 0.6) +
+      # Styling
+      labs(x = "Pitch Count", 
+           y = "Pitch Velocity (MPH)", 
+           title = "Pitch Velocity Over Time") +
+      scale_color_manual(values = pitch_colors) +
+      scale_x_continuous(limits = c(0, max_index * 1.15),  # Extra space for annotations
+                         breaks = seq(0, max_index, by = 50)) +
+      scale_y_continuous(limits = c(
+        min(data_with_pitch_no$RelSpeed, na.rm = TRUE) - 3,
+        max(data_with_pitch_no$RelSpeed, na.rm = TRUE) + 3
+      )) +
+      theme_minimal() +
+      theme(
+        plot.title = element_text(hjust = 0.5, size = 14, face = "plain"),
+        axis.title = element_text(size = 11),
+        axis.text = element_text(size = 10),
+        legend.position = "bottom",
+        legend.title = element_blank(),
+        legend.text = element_text(size = 10),
+        legend.direction = "horizontal",
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(fill = "white", color = NA),
+        plot.background = element_rect(fill = "white", color = NA)
+      )
+    
+    # Add annotations for average and range at the end of each line
     for(i in 1:nrow(pitch_summary)) {
-      last_point <- data_with_pitch_no %>%
-        filter(TaggedPitchType == pitch_summary$TaggedPitchType[i]) %>%
-        filter(OverallPitchCount == max(OverallPitchCount)) %>%
-        slice(1)
-      
       p <- p + annotate("text", 
-                       x = last_point$OverallPitchCount + 1, 
-                       y = last_point$RelSpeed,
-                       label = paste0(pitch_summary$avg_velo[i], " avg"),
+                       x = pitch_summary$last_index[i] + max_index * 0.02, 
+                       y = pitch_summary$last_velo[i],
+                       label = pitch_summary$range_text[i],
                        size = 3,
-                       hjust = 0)
-    }
-    
-    # Add game separators if multiple games
-    if (length(unique(data_with_pitch_no$Date)) > 1) {
-      game_boundaries <- data_with_pitch_no %>%
-        group_by(Date) %>%
-        summarise(
-          start = min(OverallPitchCount),
-          end = max(OverallPitchCount),
-          label = format(Date[1], "%m/%d")
-        )
-      
-      for (i in 2:nrow(game_boundaries)) {
-        p <- p + geom_vline(xintercept = game_boundaries$start[i] - 0.5, 
-                           linetype = "dashed", alpha = 0.3, color = "gray50")
-      }
+                       hjust = 0,
+                       color = pitch_colors[pitch_summary$TaggedPitchType[i]])
     }
     
     p
-  }, width = 900, height = 400)
+  }, width = 700, height = 350)
   
   # Spin rate over time
   output$lineplot2 <- renderPlot({
@@ -758,106 +762,86 @@ server <- function(input, output, session) {
       return()
     }
     
-    # Create pitch type specific numbering
+    # Create separate continuous numbering for each pitch type
     data_with_pitch_no <- data_with_pitch_no %>%
       group_by(TaggedPitchType) %>%
+      arrange(Date, PitchNo) %>%
       mutate(
-        PitchTypeCount = row_number(),
-        PitchTypeLabel = paste0(TaggedPitchType, " #", PitchTypeCount)
+        PitchTypeIndex = row_number() - 1  # Start from 0
       ) %>%
       ungroup()
     
-    # Get unique pitch types
-    pitch_types <- unique(data_with_pitch_no$TaggedPitchType)
+    # Get unique pitch types for consistent coloring
+    pitch_types <- sort(unique(data_with_pitch_no$TaggedPitchType))
     
-    # Create the base plot
-    p <- ggplot(data = data_with_pitch_no, aes(x = OverallPitchCount, y = SpinRate, 
-                                                color = TaggedPitchType,
-                                                group = TaggedPitchType)) +
-      geom_line(size = 2, alpha = 0.8) +
-      geom_point(size = 3, alpha = 0.9) +
-      labs(x = "Overall Pitch Count", 
-           y = "Spin Rate (RPM)", 
-           color = "Pitch Type", 
-           title = paste(input$pitcher, "- Spin Rate by Type"),
-           subtitle = paste("Games:", paste(format(unique(data_with_pitch_no$Date), "%m/%d"), collapse = ", "))) +
-      scale_y_continuous(limits = c(
-        min(data_with_pitch_no$SpinRate, na.rm = TRUE) - 100,
-        max(data_with_pitch_no$SpinRate, na.rm = TRUE) + 100
-      )) +
-      theme_bw() +
-      theme(
-        plot.title = element_text(size = 16, face = "bold", hjust = 0.5), 
-        plot.subtitle = element_text(hjust = 0.5, size = 12),
-        axis.text = element_text(size = 12),
-        legend.position = "bottom",
-        legend.direction = "horizontal",
-        legend.text = element_text(size = 11), 
-        legend.title = element_text(size = 12, face = "bold"),
-        axis.title = element_text(size = 14)
-      )
+    # Create a color palette (matching velocity plot)
+    colors <- c("#FF6B6B", "#4ECDC4", "#45B7D1", "#96CEB4", "#FECA57", "#48D1CC", "#FA8072")
+    pitch_colors <- setNames(colors[1:length(pitch_types)], pitch_types)
     
-    # Add annotations for average spin rates
+    # Find the maximum index across all pitch types for consistent x-axis
+    max_index <- max(data_with_pitch_no$PitchTypeIndex)
+    
+    # Calculate summary statistics for each pitch type
     spin_summary <- data_with_pitch_no %>%
       group_by(TaggedPitchType) %>%
       summarise(
         count = n(),
         avg_spin = round(mean(SpinRate, na.rm = TRUE), 0),
-        last_pitch = max(OverallPitchCount)
+        min_spin = round(min(SpinRate, na.rm = TRUE), 0),
+        max_spin = round(max(SpinRate, na.rm = TRUE), 0),
+        last_index = max(PitchTypeIndex),
+        last_spin = last(SpinRate),
+        .groups = 'drop'
+      ) %>%
+      mutate(
+        range_text = paste0(avg_spin, " rpm\n(", min_spin, "-", max_spin, ")")
       )
     
-    # Add text annotations at the end of each line
+    # Create the plot with continuous lines for each pitch type
+    p <- ggplot(data = data_with_pitch_no, aes(x = PitchTypeIndex, y = SpinRate, 
+                                                color = TaggedPitchType)) +
+      # Add lines connecting all points of same pitch type
+      geom_line(size = 2, alpha = 0.8) +
+      # Add individual pitch points
+      geom_point(size = 2, alpha = 0.6) +
+      # Styling
+      labs(x = "Pitch Count", 
+           y = "Spin Rate (RPM)", 
+           title = "Spin Rate Over Time") +
+      scale_color_manual(values = pitch_colors) +
+      scale_x_continuous(limits = c(0, max_index * 1.15),  # Extra space for annotations
+                         breaks = seq(0, max_index, by = 50)) +
+      scale_y_continuous(limits = c(
+        min(data_with_pitch_no$SpinRate, na.rm = TRUE) - 100,
+        max(data_with_pitch_no$SpinRate, na.rm = TRUE) + 100
+      )) +
+      theme_minimal() +
+      theme(
+        plot.title = element_text(hjust = 0.5, size = 14, face = "plain"),
+        axis.title = element_text(size = 11),
+        axis.text = element_text(size = 10),
+        legend.position = "bottom",
+        legend.title = element_blank(),
+        legend.text = element_text(size = 10),
+        legend.direction = "horizontal",
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(fill = "white", color = NA),
+        plot.background = element_rect(fill = "white", color = NA)
+      )
+    
+    # Add annotations for average and range at the end of each line
     for(i in 1:nrow(spin_summary)) {
-      last_point <- data_with_pitch_no %>%
-        filter(TaggedPitchType == spin_summary$TaggedPitchType[i]) %>%
-        filter(OverallPitchCount == max(OverallPitchCount)) %>%
-        slice(1)
-      
       p <- p + annotate("text", 
-                       x = last_point$OverallPitchCount + 1, 
-                       y = last_point$SpinRate,
-                       label = paste0(spin_summary$avg_spin[i], " avg"),
+                       x = spin_summary$last_index[i] + max_index * 0.02, 
+                       y = spin_summary$last_spin[i],
+                       label = spin_summary$range_text[i],
                        size = 3,
-                       hjust = 0)
+                       hjust = 0,
+                       color = pitch_colors[spin_summary$TaggedPitchType[i]])
     }
-    
-    # Add game separators if multiple games
-    if (length(unique(data_with_pitch_no$Date)) > 1) {
-      game_boundaries <- data_with_pitch_no %>%
-        group_by(Date) %>%
-        summarise(
-          start = min(OverallPitchCount),
-          end = max(OverallPitchCount),
-          label = format(Date[1], "%m/%d")
-        )
-      
-      for (i in 2:nrow(game_boundaries)) {
-        p <- p + geom_vline(xintercept = game_boundaries$start[i] - 0.5, 
-                           linetype = "dashed", alpha = 0.3, color = "gray50")
-      }
-    }
-    
-    # Add pitch type breakdown box
-    pitch_breakdown <- data_with_pitch_no %>%
-      group_by(TaggedPitchType) %>%
-      summarise(
-        Count = n(),
-        `Avg Spin` = round(mean(SpinRate, na.rm = TRUE), 0),
-        `Max Spin` = round(max(SpinRate, na.rm = TRUE), 0),
-        `Min Spin` = round(min(SpinRate, na.rm = TRUE), 0)
-      ) %>%
-      arrange(desc(Count))
-    
-    # Create summary text for the plot
-    breakdown_text <- paste(
-      capture.output(
-        print(pitch_breakdown, n = Inf, width = Inf)
-      ), 
-      collapse = "\n"
-    )
     
     p
-  }, width = 900, height = 400)
+  }, width = 700, height = 350)
   
   # Heat map
   output$plot1 <- renderPlot({

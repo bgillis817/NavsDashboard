@@ -14,7 +14,6 @@ library(ggrepel)
 library(readxl)
 library(rsconnect)
 
-# Load from GitHub
 url <- "https://raw.githubusercontent.com/bgillis817/NavsDashboard/main/NavsPAs25.csv"
 
 # Define weights
@@ -31,20 +30,50 @@ woba_weights <- c(
   "Error" = 0
 )
 
-# Read and preprocess data
+team_colors <- c(
+  "#FF6B6B", "#4ECDC4", "#45B7D1", "#96CEB4", "#FECA57", 
+  "#48D1CC", "#FA8072", "#DDA0DD", "#98D8C8", "#F7DC6F",
+  "#85C1E5", "#F8C471", "#82E0AA", "#D7BDE2", "#A9DFBF"
+)
+
+# Team name mappings
+team_names <- c(
+  "UPP_VAL" = "Upper Valley Nighthawks",
+  "VAL_BLU" = "Valley Blue Sox",
+  "KEE_SWA" = "Keene Swampbats",
+  "BRI_B" = "Bristol Blues",
+  "MAR_VIN" = "Martha's Vineyard Sharks",
+  "OCE_STA6" = "Ocean State Waves",
+  "NOR_ADA" = "North Adams Steeplecats",
+  "MYS_SCH" = "Mystic Schooners",
+  "NEW_GUL" = "Newport Gulls",
+  "SAN_MAI" = "Sanford Mainers",
+  "VER_MOU" = "Vermont Mountaineers",
+  "DAN_WES" = "Danbury Westerners"
+)
+
 NavsPAs <- read_csv(url) %>%
-  mutate(wOBA_contribution = case_when(
-    PlayResult == "Walk" ~ woba_weights["Walk"],
-    PlayResult == "HitByPitch" ~ woba_weights["HitByPitch"],
-    PlayResult == "Single" ~ woba_weights["Single"],
-    PlayResult == "Double" ~ woba_weights["Double"],
-    PlayResult == "Triple" ~ woba_weights["Triple"],
-    PlayResult == "HomeRun" ~ woba_weights["HomeRun"],
-    PlayResult == "FieldersChoice" ~ woba_weights["FieldersChoice"],
-    PlayResult == "Sacrifice" ~ woba_weights["Sacrifice"],
-    PlayResult == "Error" ~ woba_weights["Error"],
-    TRUE ~ woba_weights["Out"]
-  )) %>%
+  mutate(
+    # Parse date
+    Date = as.Date(Date, format = "%m/%d/%Y"),
+    
+    # Add full team names
+    PitcherTeamFull = ifelse(PitcherTeam %in% names(team_names), 
+                             team_names[PitcherTeam], 
+                             PitcherTeam),
+    
+    wOBA_contribution = case_when(
+      PlayResult == "Walk" ~ woba_weights["Walk"],
+      PlayResult == "HitByPitch" ~ woba_weights["HitByPitch"],
+      PlayResult == "Single" ~ woba_weights["Single"],
+      PlayResult == "Double" ~ woba_weights["Double"],
+      PlayResult == "Triple" ~ woba_weights["Triple"],
+      PlayResult == "HomeRun" ~ woba_weights["HomeRun"],
+      PlayResult == "FieldersChoice" ~ woba_weights["FieldersChoice"],
+      PlayResult == "Sacrifice" ~ woba_weights["Sacrifice"],
+      PlayResult == "Error" ~ woba_weights["Error"],
+      TRUE ~ woba_weights["Out"]
+    )) %>%
   arrange(Batter, PitchNo) %>%
   group_by(Batter) %>%
   mutate(
@@ -52,6 +81,17 @@ NavsPAs <- read_csv(url) %>%
     cumulative_wOBA_sum = cumsum(wOBA_contribution),
     cumulative_wOBA = cumulative_wOBA_sum / PA_count,
     PA_label = paste0("PA ", PA_count)
+  ) %>%
+  ungroup()
+
+# Calculate wOBA by opponent
+NavsPAs <- NavsPAs %>%
+  arrange(Batter, PitcherTeamFull, PitchNo) %>%
+  group_by(Batter, PitcherTeamFull) %>%
+  mutate(
+    PA_count_opp = row_number(),
+    cumulative_wOBA_sum_opp = cumsum(wOBA_contribution),
+    cumulative_wOBA_opp = cumulative_wOBA_sum_opp / PA_count_opp
   ) %>%
   ungroup()
 
@@ -65,20 +105,35 @@ ui <- fluidPage(
         padding: 10px 10px 0px 10px;
       }
       .header-container img {
-        height: 80px;
+        height: 40px;
         margin-right: 15px;
+      }
+      .header-container h1 {
+        font-family: 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+        font-weight: 600;
+        color: #2c3e50;
+        letter-spacing: 0.5px;
+        font-size: 28px;
+        margin: 0;
       }
     "))
   ),
-
+  
   div(class = "header-container",
       tags$img(src = "https://nsnavs.com.ismmedia.com/ISM3/std-content/repos/Top/Team/Opponents/navs_logo_new.png"),
-      h1("2025 Navigators Hitting Report: Individual Player Analysis")
+      h1("2025 Navigators Hitters")
   ),
-
+  
   sidebarLayout(
     sidebarPanel(
       selectInput("batter", "Select Batter", choices = sort(unique(NavsPAs$Batter))),
+      
+      # Date range selector
+      uiOutput("dateRangeUI"),
+      
+      # Opponent filter
+      uiOutput("opponentFilterUI"),
+      
       uiOutput("paRangeUI"),
       selectInput("pitchType", "Select Pitch Type", choices = c("All", unique(NavsPAs$TaggedPitchType))),
       br(),
@@ -87,7 +142,11 @@ ui <- fluidPage(
     mainPanel(
       tabsetPanel(
         tabPanel("Spray Chart", plotOutput("sprayChart")),
-        tabPanel("Rolling wOBA", plotOutput("wobaPlot")),
+        tabPanel("Rolling wOBA", 
+                 plotOutput("wobaPlot"),
+                 br(),
+                 h4("wOBA by Opponent"),
+                 plotOutput("wobaByOpponentPlot")),
         tabPanel("Stats by Pitch Type", dataTableOutput("pitchTypeTable")),
         tabPanel("Righty/Lefty Splits", dataTableOutput("splitsTable")),
         tabPanel("Pitch Type by Right/Left", dataTableOutput("splitsByPitchTable"))
@@ -98,37 +157,112 @@ ui <- fluidPage(
 
 # Server
 server <- function(input, output, session) {
-
+  
   output$playerInfo <- renderText({
-    player_data <- NavsPAs %>% filter(Batter == input$batter)
-    total_pas <- max(player_data$PA_count, na.rm = TRUE)
-    paste0("Total PAs for ", input$batter, ": ", total_pas)
+    player_data <- filtered_data_base()
+    if(nrow(player_data) > 0) {
+      total_pas <- max(player_data$PA_count, na.rm = TRUE)
+      date_range <- range(player_data$Date, na.rm = TRUE)
+      paste0("Total PAs: ", total_pas, 
+             " (", format(date_range[1], "%m/%d"), " - ", format(date_range[2], "%m/%d"), ")")
+    } else {
+      "No data available for selected filters"
+    }
   })
-
-  output$paRangeUI <- renderUI({
+  
+  # Date range UI
+  output$dateRangeUI <- renderUI({
     player_data <- NavsPAs %>% filter(Batter == input$batter)
-    max_pa <- max(player_data$PA_count, na.rm = TRUE)
-    tagList(
-      numericInput("paRangeMin", "Select Minimum PA Number", min = 1, max = max_pa, value = 1),
-      numericInput("paRangeMax", "Select Maximum PA Number", min = 1, max = max_pa, value = max_pa)
+    date_range <- range(player_data$Date, na.rm = TRUE)
+    
+    dateRangeInput("dateRange", "Select Date Range",
+                   start = date_range[1],
+                   end = date_range[2],
+                   min = date_range[1],
+                   max = date_range[2],
+                   format = "mm/dd/yyyy")
+  })
+  
+  # Opponent filter UI
+  output$opponentFilterUI <- renderUI({
+    player_data <- NavsPAs %>% filter(Batter == input$batter)
+    
+    # Filter by date range if selected
+    if (!is.null(input$dateRange)) {
+      player_data <- player_data %>%
+        filter(Date >= input$dateRange[1] & Date <= input$dateRange[2])
+    }
+    
+    opponent_info <- player_data %>%
+      group_by(PitcherTeam, PitcherTeamFull) %>%
+      summarise(
+        games = n_distinct(Date),
+        pas = n_distinct(PA_count),
+        .groups = 'drop'
+      ) %>%
+      filter(PitcherTeam != "" & !is.na(PitcherTeam)) %>%
+      arrange(PitcherTeamFull)
+    
+    opponent_choices <- setNames(
+      opponent_info$PitcherTeam,
+      paste0(opponent_info$PitcherTeamFull, " (", opponent_info$pas, " PAs)")
     )
+    
+    selectInput("opponentFilter", "Filter by Opponent",
+                choices = c("All Opponents" = "all", opponent_choices),
+                selected = "all")
   })
-
-  filtered_data <- reactive({
-    req(input$batter, input$paRangeMin, input$paRangeMax)
+  
+  output$paRangeUI <- renderUI({
+    player_data <- filtered_data_base()
+    if(nrow(player_data) > 0) {
+      max_pa <- max(player_data$PA_count, na.rm = TRUE)
+      tagList(
+        numericInput("paRangeMin", "Select Minimum PA Number", min = 1, max = max_pa, value = 1),
+        numericInput("paRangeMax", "Select Maximum PA Number", min = 1, max = max_pa, value = max_pa)
+      )
+    }
+  })
+  
+  # Base filtered data (by batter, date, opponent)
+  filtered_data_base <- reactive({
+    req(input$batter)
+    
     data <- NavsPAs %>% filter(Batter == input$batter)
+    
+    # Filter by date range if selected
+    if (!is.null(input$dateRange)) {
+      data <- data %>%
+        filter(Date >= input$dateRange[1] & Date <= input$dateRange[2])
+    }
+    
+    # Filter by opponent if selected
+    if (!is.null(input$opponentFilter) && input$opponentFilter != "all") {
+      data <- data %>% filter(PitcherTeam == input$opponentFilter)
+    }
+    
+    data
+  })
+  
+  # Fully filtered data (including pitch type and PA range)
+  filtered_data <- reactive({
+    req(input$paRangeMin, input$paRangeMax)
+    
+    data <- filtered_data_base()
+    
     if (input$pitchType != "All") {
       data <- data %>% filter(TaggedPitchType == input$pitchType)
     }
+    
     data %>% filter(PA_count >= input$paRangeMin & PA_count <= input$paRangeMax)
   })
-
+  
   output$sprayChart <- renderPlot({
     data <- filtered_data()
     baseball_data <- data %>%
       dplyr::select(LastTrackedDistance, Bearing, PlayResult) %>%
       filter(!is.na(LastTrackedDistance) & !is.na(Bearing) & !is.na(PlayResult))
-
+    
     ggplot(baseball_data, aes(x = Bearing, y = LastTrackedDistance, color = PlayResult)) +
       annotate("rect", xmin = 45, xmax = -45, ymin = 0, ymax = Inf, fill = "grey", alpha = 0.2) +
       annotate("text", x = rep(50, 4), y = c(100, 200, 300, 400), label = c("100", "200", "300", "400")) +
@@ -144,21 +278,87 @@ server <- function(input, output, session) {
       )) +
       labs(title = paste(input$batter, "Spray Chart"), subtitle = "Color-coded by Play Result", color = "Play Result")
   })
-
+  
   output$wobaPlot <- renderPlot({
     data <- filtered_data() %>% arrange(PA_count)
     if (nrow(data) == 0 || all(is.na(data$cumulative_wOBA)) || !any(is.finite(data$cumulative_wOBA))) {
       ggplot() + labs(title = "No valid data for selected range", x = "PA", y = "wOBA")
     } else {
       valid_data <- data %>% filter(is.finite(cumulative_wOBA))
-      ggplot(valid_data, aes(x = PA_count, y = cumulative_wOBA)) +
-        geom_line(color = "orange", size = 1) +
+      
+      # Add horizontal reference lines
+      p <- ggplot(valid_data, aes(x = PA_count, y = cumulative_wOBA)) +
+        geom_hline(yintercept = 0.320, linetype = "dashed", color = "gray50", alpha = 0.5) +
+        geom_hline(yintercept = 0.370, linetype = "dashed", color = "gray50", alpha = 0.5) +
+        geom_hline(yintercept = 0.420, linetype = "dashed", color = "gray50", alpha = 0.5) +
+        annotate("text", x = min(valid_data$PA_count), y = 0.325, label = "Average (.320)", hjust = 0, size = 3) +
+        annotate("text", x = min(valid_data$PA_count), y = 0.375, label = "Good (.370)", hjust = 0, size = 3) +
+        annotate("text", x = min(valid_data$PA_count), y = 0.425, label = "Great (.420)", hjust = 0, size = 3) +
+        geom_line(color = "orange", size = 1.5) +
         geom_point(color = "orange", size = 2) +
-        labs(title = paste(input$batter, "Rolling wOBA"), x = "Plate Appearance", y = "wOBA") +
-        theme_classic()
+        labs(title = paste(input$batter, "Rolling wOBA"), 
+             x = "Plate Appearance", 
+             y = "wOBA") +
+        theme_classic() +
+        theme(plot.title = element_text(face = "bold", size = 14))
+      
+      # Add wOBA annotation
+      final_woba <- tail(valid_data$cumulative_wOBA, 1)
+      p <- p + annotate("text", x = max(valid_data$PA_count), y = final_woba, 
+                        label = sprintf("%.3f", final_woba), 
+                        hjust = -0.1, vjust = 0.5, size = 4, fontface = "bold")
+      
+      p
     }
   })
-
+  
+  output$wobaByOpponentPlot <- renderPlot({
+    data <- filtered_data_base() %>% 
+      filter(!is.na(PitcherTeamFull) & PitcherTeamFull != "")
+    
+    if (nrow(data) == 0) {
+      ggplot() + labs(title = "No valid data for selected range")
+    } else {
+      # Get unique teams and assign colors
+      unique_teams <- sort(unique(data$PitcherTeamFull))
+      team_color_mapping <- setNames(team_colors[1:length(unique_teams)], unique_teams)
+      
+     
+      p <- ggplot(data, aes(x = PA_count_opp, y = cumulative_wOBA_opp, color = PitcherTeamFull)) +
+        geom_hline(yintercept = 0.320, linetype = "dashed", color = "gray50", alpha = 0.5) +
+        geom_line(size = 1.5, alpha = 0.8) +
+        geom_point(size = 2, alpha = 0.8) +
+        scale_color_manual(values = team_color_mapping) +
+        labs(title = paste(input$batter, "wOBA by Opponent"), 
+             x = "Plate Appearances vs Team", 
+             y = "Cumulative wOBA",
+             color = "Opponent") +
+        theme_classic() +
+        theme(plot.title = element_text(face = "bold", size = 14),
+              legend.position = "right",
+              legend.text = element_text(size = 9))
+      
+      final_values <- data %>%
+        group_by(PitcherTeamFull) %>%
+        summarise(
+          final_pa = max(PA_count_opp),
+          final_woba = last(cumulative_wOBA_opp),
+          .groups = 'drop'
+        )
+      
+      for(i in 1:nrow(final_values)) {
+        p <- p + annotate("text", 
+                          x = final_values$final_pa[i], 
+                          y = final_values$final_woba[i],
+                          label = sprintf("%.3f", final_values$final_woba[i]),
+                          hjust = -0.1, vjust = 0.5, size = 3,
+                          color = team_color_mapping[final_values$PitcherTeamFull[i]])
+      }
+      
+      p
+    }
+  })
+  
   output$pitchTypeTable <- renderDataTable({
     data <- filtered_data() %>%
       group_by(TaggedPitchType) %>%
@@ -179,7 +379,7 @@ server <- function(input, output, session) {
       ) %>% filter(AB > 0)
     datatable(data)
   })
-
+  
   output$splitsTable <- renderDataTable({
     data <- filtered_data() %>%
       group_by(PitcherThrows) %>%
@@ -200,7 +400,7 @@ server <- function(input, output, session) {
       ) %>% filter(AB > 0)
     datatable(data)
   })
-
+  
   output$splitsByPitchTable <- renderDataTable({
     data <- filtered_data() %>%
       group_by(PitcherThrows, TaggedPitchType) %>%

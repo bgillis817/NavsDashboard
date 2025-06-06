@@ -14,7 +14,6 @@ library(gtsummary)
 library(ggrepel)
 library(readxl)
 
-# Load the CSV files from GitHub (using raw content URLs)
 Navigators2025 <- read_csv("https://raw.githubusercontent.com/bgillis817/NavsDashboard/Pitching/Navigators2025.csv") %>%
   mutate(
     RelHeight = substr(RelHeight, 1, nchar(RelHeight)),
@@ -27,14 +26,12 @@ Navigators2025 <- read_csv("https://raw.githubusercontent.com/bgillis817/NavsDas
     Date = as.Date(Date, format = "%m/%d/%Y")
   )
 
-# Load additional data files from GitHub
 BACON <- read.csv("https://raw.githubusercontent.com/bgillis817/NavsDashboard/Pitching/xwOBAcon%20(1).csv")
 umpire_data <- read_csv("https://raw.githubusercontent.com/bgillis817/NavsDashboard/Pitching/called_strike.csv")
 
-# Create count variable
+
 Navigators2025$Count <- paste(Navigators2025$Balls, Navigators2025$Strikes, sep = "-")
 
-# Checks and CSV adjustments
 ChecksCSV <- Navigators2025 %>%
   mutate(
     HCheck = case_when(PlayResult %in% c('Single', 'Double', 'Triple', 'HomeRun') ~ TRUE, TRUE ~ FALSE),
@@ -65,7 +62,6 @@ ChecksCSV <- Navigators2025 %>%
     PACheck = StrikeoutCheck + WalkCheck + HBPCheck + BIPCheck
   )
 
-# Join with BACON data
 BACONCSV <- ChecksCSV %>%
   mutate(
     floorExitSpeed = floor(ExitSpeed),
@@ -168,7 +164,7 @@ ui <- fluidPage(
   
   # Title with custom class
   div(class = "title-panel",
-      titlePanel("2025 Navigators Pitching Report: Individual Pitcher Analysis")
+      titlePanel("2025 Navigators Pitchers")
   ),
   br(),
   

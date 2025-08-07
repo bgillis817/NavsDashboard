@@ -18,12 +18,12 @@ url <- "https://raw.githubusercontent.com/bgillis817/NavsDashboard/main/NavsPAs2
 
 # Define weights
 woba_weights <- c(
-  "Walk" = 0.98,
-  "HitByPitch" = 0.98,
-  "Single" = 1.3,
-  "Double" = 1.68,
-  "Triple" = 1.94,
-  "HomeRun" = 2.35,
+  "Walk" = 0.690,
+  "HitByPitch" = 0.690,
+  "Single" = 0.888,
+  "Double" = 1.271,
+  "Triple" = 1.616,
+  "HomeRun" = 2.101,
   "Out" = 0,
   "FieldersChoice" = 0,
   "Sacrifice" = 0,

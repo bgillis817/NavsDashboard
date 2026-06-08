@@ -1,0 +1,42 @@
+name: Deploy to shinyapps.io
+
+on:
+  push:
+    branches:
+      - Base
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: '4.4.1'
+
+      - name: Install packages
+        run: |
+          install.packages(c("shiny","dplyr","readr","ggplot2","DT","scales","rsconnect"))
+        shell: Rscript {0}
+
+      - name: Deploy to shinyapps.io
+        env:
+          SHINYAPPS_ACCOUNT: ${{ secrets.SHINYAPPS_ACCOUNT }}
+          SHINYAPPS_TOKEN: ${{ secrets.SHINYAPPS_TOKEN }}
+          SHINYAPPS_SECRET: ${{ secrets.SHINYAPPS_SECRET }}
+        run: |
+          rsconnect::setAccountInfo(
+            name   = Sys.getenv("SHINYAPPS_ACCOUNT"),
+            token  = Sys.getenv("SHINYAPPS_TOKEN"),
+            secret = Sys.getenv("SHINYAPPS_SECRET")
+          )
+          rsconnect::deployApp(
+            appDir   = ".",
+            appName  = "NavigatorsDash",
+            account  = Sys.getenv("SHINYAPPS_ACCOUNT"),
+            server   = "shinyapps.io",
+            forceUpdate = TRUE,
+            lint     = FALSE
+          )
+        shell: Rscript {0}

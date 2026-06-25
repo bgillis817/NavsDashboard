@@ -8,6 +8,7 @@ library(shiny)
 library(dplyr)
 library(readr)
 library(ggplot2)
+library(plotly)
 library(DT)
 library(scales)
 
@@ -315,6 +316,15 @@ theme_navs <- function(base_size=12) {
 
 heat_fills <- c("#141720","#1a3a5c","#1565c0","#ff4655","#ffeb3b")
 
+# ── ggplotly wrapper: hover tooltips + dark styling ──────────────────────────
+to_dark_plotly <- function(gg) {
+  plotly::ggplotly(gg, tooltip="text") %>%
+    plotly::layout(paper_bgcolor="#0f1117", plot_bgcolor="#141720",
+                   font=list(color="#b0b8d4"),
+                   legend=list(font=list(color="#b0b8d4"))) %>%
+    plotly::config(displaylogo=FALSE)
+}
+
 # ── Location heatmap helper ───────────────────────────────────────────────────
 loc_heatmap <- function(d, title_str, subtitle_str="", flip_side=FALSE) {
   if (is.null(d) || nrow(d) < 5) {
@@ -576,11 +586,11 @@ ui <- navbarPage(
           tabPanel("Movement & Release",
             br(),
             tags$div(class="section-header","Pitch Movement"),
-            tags$div(class="section-sub","Horizontal break vs. induced vertical break"),
-            plotOutput("p_movement",height="420px"),
+            tags$div(class="section-sub","Horizontal break vs. induced vertical break \u00b7 hover for pitch detail"),
+            plotlyOutput("p_movement",height="420px"),
             br(),
             tags$div(class="section-header","Release Points"),
-            plotOutput("p_release",height="370px")
+            plotlyOutput("p_release",height="370px")
           ),
           # Pitch Sequencing
           tabPanel("Pitch Sequencing",
@@ -638,6 +648,28 @@ ui <- navbarPage(
               )
             ),
             plotOutput("p_heatmap",height="480px")
+          ),
+          # Pitch Locations
+          tabPanel("Pitch Locations",
+            br(),
+            tags$div(class="section-header","Individual Pitch Locations"),
+            tags$div(class="section-sub",
+              "Every pitch as a dot \u2014 hover for detail; useful for small samples the heat map smooths over."),
+            tags$div(class="filter-bar",
+              fluidRow(
+                column(3, uiOutput("p_pl_pitch_ui")),
+                column(3, uiOutput("p_pl_count_ui")),
+                column(3,
+                  radioButtons("p_pl_hand","Batter Side",
+                               choices=c("Combined","Right","Left"),
+                               selected="Combined",inline=TRUE)),
+                column(3,
+                  radioButtons("p_pl_color","Color By",
+                               choices=c("Pitch Type"="pitch","Outcome"="outcome"),
+                               selected="pitch",inline=TRUE))
+              )
+            ),
+            plotlyOutput("p_pitchloc",height="480px")
           ),
           # Velocity & Spin
           tabPanel("Velocity & Spin",
@@ -1350,13 +1382,15 @@ server <- function(input, output, session) {
         `Spin`=round(mean(SpinRate,na.rm=TRUE),0),
         IVB=round(mean(InducedVertBreak,na.rm=TRUE),1),
         HB=round(mean(HorzBreak,na.rm=TRUE),1),
+        `Rel H`=round(mean(RelHeight,na.rm=TRUE),2),
+        `Rel S`=round(mean(RelSide,na.rm=TRUE),2),
         `CSW%`=paste0(round(mean(CSWCheck,na.rm=TRUE)*100,1),"%"),
         `Zone%`=paste0(round(mean(ZoneCheck,na.rm=TRUE)*100,1),"%"),
         `Whiff%`={sw=sum(SwingCheck,na.rm=TRUE);paste0(if(sw>0)round(sum(WhiffCheck,na.rm=TRUE)/sw*100,1)else 0,"%")},
         .groups="drop"
       ) %>%
       mutate(Usage=scales::percent(Pitches/sum(Pitches), accuracy=0.1)) %>%
-      dplyr::select(Pitch, Pitches, Usage, `Avg Velo`, `Max Velo`, Spin, IVB, HB, `CSW%`, `Zone%`, `Whiff%`)
+      dplyr::select(Pitch, Pitches, Usage, `Avg Velo`, `Max Velo`, Spin, IVB, HB, `Rel H`, `Rel S`, `CSW%`, `Zone%`, `Whiff%`)
     datatable(tbl,options=dt_opts,rownames=FALSE)
   })
 
@@ -1394,32 +1428,45 @@ server <- function(input, output, session) {
     datatable(tbl,options=dt_opts,rownames=FALSE)
   })
 
-  output$p_movement <- renderPlot({
+  output$p_movement <- renderPlotly({
     d<-p_filt();req(d,nrow(d)>0)
-    ggplot(d,aes(x=HorzBreak,y=InducedVertBreak,color=TaggedPitchType)) +
+    gg <- ggplot(d,aes(x=HorzBreak,y=InducedVertBreak,color=TaggedPitchType)) +
       geom_hline(yintercept=0,color="#2a2d3a",linewidth=.8) +
       geom_vline(xintercept=0,color="#2a2d3a",linewidth=.8) +
-      geom_point(size=2.5,alpha=.7) +
+      geom_point(aes(text=paste0(TaggedPitchType,
+                                 "<br>Velo: ",round(RelSpeed,1)," mph",
+                                 "<br>Spin: ",round(SpinRate,0)," rpm",
+                                 "<br>IVB: ",round(InducedVertBreak,1)," in",
+                                 "<br>HB: ",round(HorzBreak,1)," in",
+                                 "<br>Count: ",Balls,"-",Strikes)),
+                 size=2.5,alpha=.7) +
       stat_ellipse(aes(group=TaggedPitchType),level=.68,linewidth=.6,linetype="dashed",alpha=.4) +
       scale_color_manual(values=pitch_pal,na.value="#94a3b8",name="Pitch Type") +
       xlim(-30,30)+ylim(-30,30) +
       labs(title=paste(input$p_pitcher,"—",p_season(),"Movement"),
            x="Horizontal Break (in)",y="Induced Vertical Break (in)") +
       theme_navs()
-  }, bg="#0f1117")
+    to_dark_plotly(gg)
+  })
 
-  output$p_release <- renderPlot({
+  output$p_release <- renderPlotly({
     d<-p_filt();req(d,nrow(d)>0)
-    ggplot(d,aes(x=RelSide,y=RelHeight,color=TaggedPitchType)) +
+    gg <- ggplot(d,aes(x=RelSide,y=RelHeight,color=TaggedPitchType)) +
       geom_hline(yintercept=0,color="#2a2d3a",linewidth=.5) +
       geom_vline(xintercept=0,color="#2a2d3a",linewidth=.5) +
-      geom_point(size=2.5,alpha=.7) +
+      geom_point(aes(text=paste0(TaggedPitchType,
+                                 "<br>Velo: ",round(RelSpeed,1)," mph",
+                                 "<br>Rel H: ",round(RelHeight,2)," ft",
+                                 "<br>Rel S: ",round(RelSide,2)," ft",
+                                 "<br>Spin: ",round(SpinRate,0)," rpm")),
+                 size=2.5,alpha=.7) +
       scale_color_manual(values=pitch_pal,na.value="#94a3b8",name="Pitch Type") +
       xlim(-4,4)+ylim(2,7) +
       labs(title=paste(input$p_pitcher,"—",p_season(),"Release Points"),
            x="Horizontal Release (ft)",y="Vertical Release (ft)") +
       theme_navs()
-  }, bg="#0f1117")
+    to_dark_plotly(gg)
+  })
 
   # ── Pitch Sequencing ──────────────────────────────────────────────────────
   seq_clicked <- reactiveValues(first=NULL, second=NULL)
@@ -1565,6 +1612,62 @@ server <- function(input, output, session) {
       loc_heatmap(d, paste(input$p_pitcher,"—",p_season(),input$p_hm_pitch,"Heat Map"), sub)
     }
   }, bg="#0f1117")
+
+  # ── Pitch Locations (individual dots, hover) ──────────────────────────────
+  output$p_pl_pitch_ui <- renderUI({
+    req(!is.null(p_raw()))
+    selectInput("p_pl_pitch","Pitch Type",
+                choices=c("All Pitches",sort(unique(p_raw()$TaggedPitchType))))
+  })
+  output$p_pl_count_ui <- renderUI({
+    d <- p_filt(); if(is.null(d)) return(NULL)
+    selectInput("p_pl_count","Count / Situation",choices=count_choices(d$CountIndiv))
+  })
+  output$p_pitchloc <- renderPlotly({
+    d <- p_filt(); req(d, nrow(d)>0)
+    if (!is.null(input$p_pl_pitch) && input$p_pl_pitch!="All Pitches")
+      d <- d %>% filter(TaggedPitchType==input$p_pl_pitch)
+    d <- filter_by_count(d, input$p_pl_count, "CountSit", "CountIndiv")
+    if (!is.null(input$p_pl_hand) && input$p_pl_hand!="Combined")
+      d <- d %>% filter(BatterSide==input$p_pl_hand)
+    d <- d %>% filter(!is.na(PlateLocSide), !is.na(PlateLocHeight))
+    validate(need(nrow(d)>0, "No pitches for this selection"))
+
+    d <- d %>% mutate(Outcome=dplyr::case_when(
+      PitchCall=="StrikeSwinging"                ~ "Whiff",
+      PitchCall=="StrikeCalled"                  ~ "Called Strike",
+      PitchCall=="InPlay"                        ~ "In Play",
+      PitchCall=="FoulBall"                      ~ "Foul",
+      PitchCall %in% c("BallCalled","HitByPitch")~ "Ball",
+      TRUE                                       ~ "Other"))
+    d$hover <- paste0(d$TaggedPitchType,
+                      "<br>Velo: ",round(d$RelSpeed,1)," mph",
+                      "<br>Count: ",d$Balls,"-",d$Strikes,
+                      "<br>Result: ",d$Outcome,
+                      "<br>Loc: ",round(d$PlateLocSide,2),", ",round(d$PlateLocHeight,2))
+
+    base <- ggplot(d,aes(x=PlateLocSide,y=PlateLocHeight)) +
+      annotate("rect",xmin=-1,xmax=1,ymin=1.6,ymax=3.4,fill=NA,color="#ffffff",linewidth=.7) +
+      ylim(1,4)+xlim(-1.8,1.8) +
+      labs(title=paste(input$p_pitcher,"—",p_season(),"Pitch Locations"),
+           x="Horizontal",y="Vertical") +
+      theme_navs()
+
+    if ((input$p_pl_color %||% "pitch")=="outcome") {
+      d$Outcome <- factor(d$Outcome,
+        levels=c("Whiff","Called Strike","In Play","Foul","Ball","Other"))
+      pl_outcome_pal <- c("Whiff"="#ff4655","Called Strike"="#ffd700","In Play"="#00d4ff",
+                          "Foul"="#a78bfa","Ball"="#64748b","Other"="#94a3b8")
+      gg <- base + geom_point(aes(color=Outcome,text=hover),size=2.4,alpha=.85) +
+        scale_color_manual(values=pl_outcome_pal,name="Outcome",drop=FALSE)
+    } else {
+      gg <- base + geom_point(aes(color=TaggedPitchType,text=hover),size=2.4,alpha=.85) +
+        scale_color_manual(values=pitch_pal,na.value="#94a3b8",name="Pitch Type")
+    }
+    if (is.null(input$p_pl_pitch) || input$p_pl_pitch=="All Pitches")
+      gg <- gg + facet_wrap(~TaggedPitchType,ncol=3)
+    to_dark_plotly(gg)
+  })
 
   # ── Velo / Spin ───────────────────────────────────────────────────────────
   trend_plot <- function(d, y_col, y_lab, title_str) {

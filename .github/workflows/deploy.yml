@@ -17,7 +17,7 @@ jobs:
 
       - name: Install packages
         run: |
-          install.packages(c("shiny","dplyr","readr","ggplot2","DT","scales","rsconnect"))
+          install.packages(c("shiny","dplyr","readr","ggplot2","plotly","DT","scales","rsconnect"))
         shell: Rscript {0}
 
       - name: Deploy to shinyapps.io

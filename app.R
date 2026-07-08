@@ -171,13 +171,30 @@ process_pitchers <- function(df) {
   }, error=function(e) { message("Pitcher load error: ", e$message); NULL })
 }
 
+# ── Robust CSV fetch: retry w/ exponential backoff (handles raw 429/503) ─────
+read_csv_retry <- function(url, max_tries = 5, base_wait = 1.5) {
+  for (i in seq_len(max_tries)) {
+    res <- tryCatch(read_csv(url, show_col_types = FALSE),
+                    error = function(e) e)
+    if (!inherits(res, "error")) return(res)
+    if (i < max_tries) {
+      wait <- base_wait * (2 ^ (i - 1)) + runif(1, 0, 0.5)  # exp backoff + jitter
+      message(sprintf("  fetch failed (try %d/%d): %s — retrying in %.1fs",
+                      i, max_tries, conditionMessage(res), wait))
+      Sys.sleep(wait)
+    } else {
+      message("  giving up on ", url, ": ", conditionMessage(res))
+    }
+  }
+  NULL
+}
+
 # ── Load raw CSVs once, then split by Season column ──────────────────────────
 message("Loading data files...")
 
-raw_hitters_all  <- tryCatch(read_csv(HITTERS_URL,  show_col_types=FALSE),
-                              error=function(e){ message("Hitter CSV error: ",e$message); NULL })
-raw_pitchers_all <- tryCatch(read_csv(PITCHERS_URL, show_col_types=FALSE),
-                              error=function(e){ message("Pitcher CSV error: ",e$message); NULL })
+raw_hitters_all  <- read_csv_retry(HITTERS_URL)
+Sys.sleep(1)  # stagger reads to avoid hammering raw.githubusercontent back-to-back
+raw_pitchers_all <- read_csv_retry(PITCHERS_URL)
 
 # Helper: filter a raw df to one season using the year in the Date column
 slice_season <- function(df, yr) {
@@ -278,6 +295,9 @@ table.dataTable tbody tr:hover{background:#1e2235!important;}
 .section-sub{color:#8892b0;font-size:12px;margin:0 0 16px 15px;}
 .filter-bar{background:#1a1e2e;border:1px solid #2a2d3a;border-radius:8px;
   padding:14px 18px;margin-bottom:18px;}
+/* Data-load error banner */
+.load-error{background:#3a1a1e;border:1px solid #ff4655;border-radius:8px;
+  padding:14px 18px;margin-bottom:16px;color:#ff9aa2;font-weight:600;font-size:14px;}
 /* Season toggle pill */
 .season-toggle{display:flex;gap:8px;margin-bottom:6px;}
 .season-btn{padding:6px 20px;border-radius:20px;border:1px solid #2e3350;
@@ -387,6 +407,10 @@ ui <- navbarPage(
         $('.season-btn').removeClass('active');
         $('#sbtn_' + s).addClass('active');
       });
+      Shiny.addCustomMessageHandler('setSeasonP', function(s) {
+        $('#pbtn_2026, #pbtn_2025').removeClass('active');
+        $('#pbtn_' + s).addClass('active');
+      });
     "))
   ),
 
@@ -414,6 +438,7 @@ ui <- navbarPage(
         uiOutput("h_playerInfo")
       ),
       mainPanel(width=9,
+        uiOutput("h_dataStatus"),
         tabsetPanel(
           # Overview
           tabPanel("Overview",
@@ -562,6 +587,7 @@ ui <- navbarPage(
         uiOutput("p_pitcherInfo")
       ),
       mainPanel(width=9,
+        uiOutput("p_dataStatus"),
         tabsetPanel(
           # Summary
           tabPanel("Summary",
@@ -739,12 +765,25 @@ server <- function(input, output, session) {
   # Sync pill highlight via JS
   observeEvent(h_season(), {
     session$sendCustomMessage("setSeason", h_season())
-    # flip the hitter pill buttons
-    session$sendCustomMessage(type="setSeason",
-      message=h_season())
   })
   observeEvent(p_season(), {
-    # pitcher-side buttons use pbtn_ prefix — handled generically below
+    session$sendCustomMessage("setSeasonP", p_season())
+  })
+
+  # ── Data-load status banners ──────────────────────────────────────────────
+  output$h_dataStatus <- renderUI({
+    if (is.null(seasons[[h_season()]]$hitters))
+      tags$div(class="load-error",
+        "\u26A0 Hitter data failed to load for this season \u2014 likely a GitHub ",
+        "rate-limit (HTTP 429) or fetch error at startup. Reload the app; if it ",
+        "persists, redeploy.")
+  })
+  output$p_dataStatus <- renderUI({
+    if (is.null(seasons[[p_season()]]$pitchers))
+      tags$div(class="load-error",
+        "\u26A0 Pitcher data failed to load for this season \u2014 likely a GitHub ",
+        "rate-limit (HTTP 429) or fetch error at startup. Reload the app; if it ",
+        "persists, redeploy.")
   })
 
   # ── Reactive data accessors ───────────────────────────────────────────────

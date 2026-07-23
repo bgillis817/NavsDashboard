@@ -20,6 +20,12 @@ jobs:
           install.packages(c("shiny","dplyr","readr","ggplot2","plotly","DT","scales","rsconnect"))
         shell: Rscript {0}
 
+      - name: Write access password
+        env:
+          APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
+        run: |
+          echo "$APP_PASSWORD" > app_password.txt
+
       - name: Deploy to shinyapps.io
         env:
           SHINYAPPS_ACCOUNT: ${{ secrets.SHINYAPPS_ACCOUNT }}

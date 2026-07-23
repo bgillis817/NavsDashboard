@@ -75,8 +75,8 @@ process_hitters <- function(df) {
         PitcherTeamFull = ifelse(PitcherTeam %in% names(team_names),
                                  team_names[PitcherTeam], PitcherTeam),
         wOBA_contribution = dplyr::case_when(
-          PlayResult=="Walk"          ~ woba_weights["Walk"],
-          PlayResult=="HitByPitch"    ~ woba_weights["HitByPitch"],
+          KorBB=="Walk"               ~ woba_weights["Walk"],
+          PitchCall=="HitByPitch"     ~ woba_weights["HitByPitch"],
           PlayResult=="Single"        ~ woba_weights["Single"],
           PlayResult=="Double"        ~ woba_weights["Double"],
           PlayResult=="Triple"        ~ woba_weights["Triple"],
@@ -224,18 +224,29 @@ stat_card <- function(value, label) {
 
 slg_stats <- function(d) {
   d %>% summarise(
-    PA  = n(),
+    # Trackman records walks in KorBB and HBP in PitchCall — NOT in PlayResult
+    # (PlayResult is "Undefined" on those rows). Count each from its own column.
+    # PA counts terminal events only, so baserunning rows (StolenBase /
+    # CaughtStealing) don't inflate the denominator.
+    K   = sum(KorBB=="Strikeout", na.rm=TRUE),
+    BB  = sum(KorBB=="Walk", na.rm=TRUE),
+    HBP = sum(PitchCall=="HitByPitch", na.rm=TRUE),
+    Sac = sum(PlayResult=="Sacrifice", na.rm=TRUE),
+    BIP = sum(PlayResult %in% c("Single","Double","Triple","HomeRun","Out",
+                                "Error","FieldersChoice","Sacrifice"), na.rm=TRUE),
+    PA  = K + BB + HBP + BIP,
     H   = sum(PlayResult %in% c("Single","Double","Triple","HomeRun")),
     `1B`= sum(PlayResult=="Single"), `2B`=sum(PlayResult=="Double"),
     `3B`= sum(PlayResult=="Triple"), HR=sum(PlayResult=="HomeRun"),
-    BB  = sum(PlayResult=="Walk"),   HBP=sum(PlayResult=="HitByPitch"),
-    AB  = PA-BB-HBP,
+    AB  = PA-BB-HBP-Sac,
     TB  = `1B`+2*`2B`+3*`3B`+4*HR,
     BA  = ifelse(AB>0, round(H/AB,3),  NA),
-    OBP = ifelse(PA>0, round((H+BB+HBP)/PA,3), NA),
+    OBP = ifelse((AB+BB+HBP+Sac)>0,
+                 round((H+BB+HBP)/(AB+BB+HBP+Sac),3), NA),
     SLG = ifelse(AB>0, round(TB/AB,3), NA),
-    wOBA= round(sum(wOBA_contribution,na.rm=TRUE)/PA,3)
-  ) %>% filter(AB>0)
+    wOBA= ifelse((AB+BB+HBP+Sac)>0,
+                 round(sum(wOBA_contribution,na.rm=TRUE)/(AB+BB+HBP+Sac),3), NA)
+  ) %>% filter(PA>0)
 }
 
 dt_opts <- list(
@@ -883,8 +894,9 @@ server <- function(input, output, session) {
   h_stats <- reactive({
     d <- h_filt(); if(is.null(d)||nrow(d)==0) return(NULL)
     hits  <- sum(d$PlayResult %in% c("Single","Double","Triple","HomeRun"))
-    walks <- sum(d$PlayResult=="Walk"); hbp <- sum(d$PlayResult=="HitByPitch")
-    pa <- n_distinct(d$PA_count); ab <- pa-walks-hbp
+    walks <- sum(d$KorBB=="Walk", na.rm=TRUE); hbp <- sum(d$PitchCall=="HitByPitch", na.rm=TRUE)
+    sac <- sum(d$PlayResult=="Sacrifice", na.rm=TRUE)
+    pa <- n_distinct(d$PA_count); ab <- pa-walks-hbp-sac
     tb <- sum(d$PlayResult=="Single")+2*sum(d$PlayResult=="Double")+
           3*sum(d$PlayResult=="Triple")+4*sum(d$PlayResult=="HomeRun")
     woba_s <- sum(d$wOBA_contribution,na.rm=TRUE)

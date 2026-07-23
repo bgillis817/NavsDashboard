@@ -403,7 +403,51 @@ filter_by_count <- function(d, cnt_val, sit_col, indiv_col) {
 # ============================================================================
 #  UI
 # ============================================================================
-ui <- navbarPage(
+# ── App-wide access password ─────────────────────────────────────────────────
+# Read from a file written at deploy time from a GitHub secret, or from an
+# environment variable. NEVER hard-code the password here: this repo is public.
+get_app_password <- function() {
+  bundled <- "app_password.txt"
+  if (file.exists(bundled)) {
+    pw <- trimws(readLines(bundled, n=1, warn=FALSE))
+    if (nchar(pw) > 0) return(pw)
+  }
+  Sys.getenv("APP_PASSWORD")
+}
+
+# ── Login screen ─────────────────────────────────────────────────────────────
+# The real UI (main_ui) is only ever sent to the browser after a correct
+# password, because it is rendered server-side into output$app_gate. Nothing
+# about the dashboard is present in the page source before that.
+login_css <- "
+.login-wrap{display:flex;align-items:center;justify-content:center;
+  min-height:100vh;background:#0f1117;font-family:'Inter',system-ui,sans-serif;}
+.login-card{background:#1a1e2e;border:1px solid #2a2d3a;border-radius:12px;
+  padding:34px 38px;width:340px;text-align:center;
+  box-shadow:0 8px 30px rgba(0,0,0,.55);}
+.login-card h3{color:#fff;font-weight:700;margin:0 0 6px;font-size:19px;}
+.login-card p.sub{color:#8892b0;font-size:12px;margin:0 0 20px;}
+.login-card .form-group{margin-bottom:14px;}
+.login-card input[type=password]{background:#141720;color:#e8eaf0;
+  border:1px solid #2e3350;border-radius:6px;width:100%;padding:8px 12px;}
+.login-card .btn{background:#ff4655;color:#fff;border:none;border-radius:6px;
+  padding:8px 0;width:100%;font-weight:600;margin-top:4px;}
+.login-card .btn:hover{background:#e03e4c;}
+.login-err{color:#ff4655;font-size:12px;margin-top:12px;min-height:16px;}
+"
+
+login_ui <- tags$div(class="login-wrap",
+  tags$div(class="login-card",
+    tags$h3("North Shore Navigators"),
+    tags$p(class="sub", "Enter the access password to continue."),
+    passwordInput("login_pw", NULL, value="", placeholder="Password"),
+    actionButton("login_btn", "Enter", class="btn"),
+    uiOutput("login_msg"),
+    tags$script(HTML("document.addEventListener('keydown',function(e){if(e.key==='Enter'){var b=document.getElementById('login_btn');if(b){b.click();}}});"))
+  )
+)
+
+main_ui <- navbarPage(
   title = tags$span(
     tags$img(src=NAVS_LOGO, height="30px",
              style="margin-right:10px;vertical-align:middle;"),
@@ -767,7 +811,46 @@ ui <- navbarPage(
 # ============================================================================
 #  SERVER
 # ============================================================================
+
+# ── Top-level UI: login gate only. The dashboard is injected after auth. ─────
+ui <- bootstrapPage(
+  tags$head(tags$style(HTML(login_css))),
+  uiOutput("app_gate")
+)
+
 server <- function(input, output, session) {
+
+  # ── Login gate ─────────────────────────────────────────────────────────────
+  authed     <- reactiveVal(FALSE)
+  login_fail <- reactiveVal(0L)
+  login_msg_txt <- reactiveVal("")
+
+  observeEvent(input$login_btn, {
+    pw <- get_app_password()
+    if (nchar(pw) == 0) {
+      # Fail closed: if the secret never made it to the server, do NOT quietly
+      # leave the app open to everyone — say so instead.
+      login_msg_txt("No password configured on the server. Set the APP_PASSWORD secret and redeploy.")
+      return(invisible())
+    }
+    if (!is.null(input$login_pw) && identical(input$login_pw, pw)) {
+      authed(TRUE)
+      login_msg_txt("")
+    } else {
+      login_fail(login_fail() + 1L)
+      login_msg_txt("Incorrect password.")
+    }
+  })
+
+  output$login_msg <- renderUI({
+    tags$div(class="login-err", login_msg_txt())
+  })
+
+  output$app_gate <- renderUI({
+    if (authed()) main_ui else login_ui
+  })
+  outputOptions(output, "app_gate", suspendWhenHidden = FALSE)
+
 
   # ── Season inputs with defaults ───────────────────────────────────────────
   h_season <- reactive({ input$h_season %||% "2026" })

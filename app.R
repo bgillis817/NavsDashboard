@@ -48,6 +48,57 @@ pitch_pal <- c(
   Other="#94a3b8"
 )
 
+# ── Scouting report: pitch-type normalization ────────────────────────────────
+# The Navs pitcher feed carries duplicate tags for the same pitch (Fastball vs
+# 4-Seam, Sinker vs 2-Seam, Changeup vs ChangeUp vs KickCH). Left alone these
+# split a by-pitch-type report into half-populated rows. Anything not listed
+# here passes through untouched.
+PITCH_ALIAS <- c(
+  "4-Seam"="Fastball", "Four-Seam"="Fastball", "FourSeamFastBall"="Fastball",
+  "FourSeamFastball"="Fastball", "Fastball"="Fastball",
+  "2-Seam"="Sinker", "TwoSeamFastBall"="Sinker", "Two-Seam"="Sinker",
+  "Sinker"="Sinker",
+  "ChangeUp"="Changeup", "KickCH"="Changeup", "Changeup"="Changeup",
+  "GyroSL"="Slider", "Slider"="Slider"
+)
+normalize_pitch <- function(x, on = TRUE) {
+  x <- as.character(x)
+  if (!isTRUE(on)) return(x)
+  hit <- PITCH_ALIAS[x]
+  ifelse(is.na(hit), x, unname(hit))
+}
+
+# pitch_pal doesn't cover every tag in the feed (Slurve, Knuckleball, ...).
+# Fill the gaps from team_pal so a manual colour scale never drops a series.
+sr_pitch_pal <- function(levels) {
+  levels <- unique(as.character(levels[!is.na(levels)]))
+  out <- pitch_pal[levels]
+  names(out) <- levels
+  miss <- which(is.na(out))
+  if (length(miss)) {
+    extra <- rep(team_pal, length.out = length(miss))
+    out[miss] <- extra
+  }
+  out
+}
+
+# ── Scouting report: section catalog (pitchers) ──────────────────────────────
+sr_sections_all <- c(
+  "Summary Cards"                    = "kpi",
+  "Arsenal Table"                    = "arsenal",
+  "Results by Pitch Type"            = "res_pt",
+  "Results vs L/R"                   = "res_lr",
+  "Results by Pitch x Hand"          = "res_pt_lr",
+  "Plate Discipline by Pitch x Hand" = "pd_pt_lr",
+  "Batted Ball by Pitch x Hand"      = "bb_pt_lr",
+  "Velocity & Spin Table"            = "velo_spin",
+  "Movement Chart"                   = "movement",
+  "Release Points"                   = "release",
+  "Heat Maps (vs RHH)"               = "hm_r",
+  "Heat Maps (vs LHH)"               = "hm_l",
+  "Heat Maps (Combined)"             = "hm_c"
+)
+
 team_pal <- c(
   "#ff4655","#4ECDC4","#45B7D1","#96CEB4","#FECA57",
   "#48D1CC","#FA8072","#DDA0DD","#98D8C8","#F7DC6F",
@@ -305,6 +356,14 @@ table.dataTable tbody tr:hover{background:#1e2235!important;}
 .section-header{color:#fff;font-size:18px;font-weight:700;border-left:3px solid #ff4655;
   padding-left:12px;margin:20px 0 4px;}
 .section-sub{color:#8892b0;font-size:12px;margin:0 0 16px 15px;}
+/* Scouting report preview tables */
+.sr-tbl{width:100%;border-collapse:collapse;font-size:12px;margin:0 0 6px 0;}
+.sr-tbl th{background:#1a1d2a;color:#e8eaf0;font-weight:600;text-align:center;
+  padding:6px 10px;border:1px solid #2a2d3a;white-space:nowrap;}
+.sr-tbl td{color:#c3c9dd;text-align:center;padding:5px 10px;
+  border:1px solid #22252f;white-space:nowrap;}
+.sr-tbl tbody tr:nth-child(even){background:#141720;}
+.sr-tbl tbody tr:hover{background:#1f2333;}
 .filter-bar{background:#1a1e2e;border:1px solid #2a2d3a;border-radius:8px;
   padding:14px 18px;margin-bottom:18px;}
 /* Data-load error banner */
@@ -478,6 +537,10 @@ main_ui <- navbarPage(
       Shiny.addCustomMessageHandler('setSeasonP', function(s) {
         $('#pbtn_2026, #pbtn_2025').removeClass('active');
         $('#pbtn_' + s).addClass('active');
+      });
+      Shiny.addCustomMessageHandler('setSeasonSR', function(s) {
+        $('#srbtn_2026, #srbtn_2025').removeClass('active');
+        $('#srbtn_' + s).addClass('active');
       });
     "))
   ),
@@ -816,6 +879,75 @@ main_ui <- navbarPage(
             dataTableOutput("p_bb_ptLrTable")
           )
         )
+      )
+    )
+  ),
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # SCOUTING REPORTS TAB (pitchers)
+  # ══════════════════════════════════════════════════════════════════════════
+  tabPanel("Scouting Reports",
+    sidebarLayout(
+      sidebarPanel(width=3,
+        tags$div(class="section-header","Season"),
+        tags$div(class="season-toggle",
+          tags$button("2026", id="srbtn_2026", class="season-btn active",
+                      onclick="Shiny.setInputValue('sr_season','2026',{priority:'event'})"),
+          tags$button("2025", id="srbtn_2025", class="season-btn",
+                      onclick="Shiny.setInputValue('sr_season','2025',{priority:'event'})")
+        ),
+        tags$hr(),
+
+        tags$div(class="section-header","Outings"),
+        radioButtons("sr_date_mode", NULL,
+                     choices=c("All outings"="all",
+                               "On or after a date"="after",
+                               "Pick specific outings"="pick"),
+                     selected="all"),
+        conditionalPanel("input.sr_date_mode == 'after'",
+          uiOutput("sr_date_from_ui")),
+        conditionalPanel("input.sr_date_mode == 'pick'",
+          uiOutput("sr_date_pick_ui")),
+        tags$hr(),
+
+        tags$div(class="section-header","Pitchers"),
+        uiOutput("sr_players_ui"),
+        fluidRow(
+          column(6, actionButton("sr_sel_all","All",   class="btn-default btn-sm")),
+          column(6, actionButton("sr_sel_none","Clear",class="btn-default btn-sm"))
+        ),
+        tags$hr(),
+
+        selectInput("sr_hand","Batter Side Filter",
+                    choices=c("Combined","Right","Left"), selected="Combined"),
+        checkboxInput("sr_norm_pitch","Merge duplicate pitch tags", value=TRUE),
+        numericInput("sr_min_n","Min pitches per row", value=3, min=1, max=50, step=1),
+        tags$hr(),
+
+        tags$div(class="section-header","Sections to Include"),
+        checkboxGroupInput("sr_sections", NULL,
+                           choices  = sr_sections_all,
+                           selected = c("kpi","arsenal","res_pt","res_pt_lr")),
+        tags$hr(),
+
+        tags$div(class="section-header","PDF Layout"),
+        radioButtons("sr_layout", NULL,
+                     choices=c("One page per pitcher"="player",
+                               "One chart per page"="single",
+                               "Group pitchers together"="combined"),
+                     selected="player"),
+        tags$hr(),
+        downloadButton("sr_download","Generate PDF",
+                       class="btn-primary", style="width:100%;"),
+        tags$br(), tags$br(),
+        uiOutput("sr_status_ui")
+      ),
+      mainPanel(width=9,
+        uiOutput("sr_dataStatus"),
+        tags$div(class="section-header","Report Preview"),
+        tags$div(class="section-sub",
+                 "Live preview of the selected sections. The PDF renders every selected pitcher; the preview shows the first five."),
+        uiOutput("sr_preview_ui")
       )
     )
   )
@@ -1955,6 +2087,626 @@ server <- function(input, output, session) {
     datatable(d%>%group_by(Pitch=TaggedPitchType,Side=BatterSide)%>%bb_stats_p(),
               options=dt_opts,rownames=FALSE)
   })
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # SCOUTING REPORTS (pitchers)
+  # ══════════════════════════════════════════════════════════════════════════
+  sr_season <- reactive({ input$sr_season %||% "2026" })
+
+  observeEvent(sr_season(), {
+    session$sendCustomMessage("setSeasonSR", sr_season())
+  })
+
+  # Season-sliced pitcher rows with a normalized pitch column bolted on.
+  sr_raw <- reactive({
+    res <- seasons[[sr_season()]]$pitchers
+    if (is.null(res) || is.null(res$data) || nrow(res$data)==0) return(NULL)
+    res$data %>%
+      mutate(
+        Pitch = normalize_pitch(TaggedPitchType,
+                                isTRUE(input$sr_norm_pitch %||% TRUE)),
+        # wOBA against. Weighted only on the pitch that ended the PA — every
+        # other pitch contributes NA so it stays out of the numerator.
+        wOBAcon = dplyr::case_when(
+          KorBB == "Walk"                ~ unname(woba_weights["Walk"]),
+          PitchCall == "HitByPitch"      ~ unname(woba_weights["HitByPitch"]),
+          PlayResult == "Single"         ~ unname(woba_weights["Single"]),
+          PlayResult == "Double"         ~ unname(woba_weights["Double"]),
+          PlayResult == "Triple"         ~ unname(woba_weights["Triple"]),
+          PlayResult == "HomeRun"        ~ unname(woba_weights["HomeRun"]),
+          PlayResult == "FieldersChoice" ~ unname(woba_weights["FieldersChoice"]),
+          PlayResult == "Sacrifice"      ~ unname(woba_weights["Sacrifice"]),
+          PlayResult == "Error"          ~ unname(woba_weights["Error"]),
+          KorBB == "Strikeout"           ~ unname(woba_weights["Out"]),
+          PlayResult == "Out"            ~ unname(woba_weights["Out"]),
+          TRUE                           ~ NA_real_
+        ))
+  })
+
+  sr_all_dates <- reactive({
+    d <- sr_raw(); if (is.null(d)) return(as.Date(character(0)))
+    sort(unique(d$Date))
+  })
+
+  output$sr_date_from_ui <- renderUI({
+    dts <- sr_all_dates(); req(length(dts)>0)
+    dateInput("sr_date_from","Include outings on or after",
+              value=min(dts), min=min(dts), max=max(dts))
+  })
+
+  output$sr_date_pick_ui <- renderUI({
+    dts <- sr_all_dates(); req(length(dts)>0)
+    lbl <- format(dts, "%b %d, %Y")
+    selectizeInput("sr_dates_pick","Outings", choices=setNames(as.character(dts), lbl),
+                   selected=as.character(dts), multiple=TRUE,
+                   options=list(plugins=list("remove_button")))
+  })
+
+  # Date scope applied before anything else, so player lists reflect it too.
+  sr_scoped <- reactive({
+    d <- sr_raw(); req(!is.null(d))
+    mode <- input$sr_date_mode %||% "all"
+    if (mode == "after" && !is.null(input$sr_date_from)) {
+      d <- d %>% filter(Date >= as.Date(input$sr_date_from))
+    } else if (mode == "pick" && !is.null(input$sr_dates_pick) &&
+               length(input$sr_dates_pick) > 0) {
+      d <- d %>% filter(Date %in% as.Date(input$sr_dates_pick))
+    }
+    if (!is.null(input$sr_hand) && input$sr_hand != "Combined")
+      d <- d %>% filter(BatterSide == input$sr_hand)
+    d
+  })
+
+  sr_pitcher_list <- reactive({
+    d <- sr_scoped(); if (is.null(d) || nrow(d)==0) return(character(0))
+    sort(unique(d$Pitcher))
+  })
+
+  output$sr_players_ui <- renderUI({
+    pl <- sr_pitcher_list()
+    if (length(pl)==0) return(tags$p(style="color:#8892b0;","No outings in range."))
+    checkboxGroupInput("sr_players", NULL, choices=pl, selected=pl[1])
+  })
+
+  observeEvent(input$sr_sel_all, {
+    updateCheckboxGroupInput(session,"sr_players", selected=sr_pitcher_list())
+  })
+  observeEvent(input$sr_sel_none, {
+    updateCheckboxGroupInput(session,"sr_players", selected=character(0))
+  })
+
+  output$sr_dataStatus <- renderUI({
+    d <- sr_scoped()
+    if (is.null(d) || nrow(d)==0)
+      return(tags$div(class="section-sub", style="color:#ff4655;",
+                      "No pitches match the current outing filter."))
+    tags$div(class="section-sub",
+             paste0(format(nrow(d), big.mark=","), " pitches \u00b7 ",
+                    length(unique(d$Date)), " outings \u00b7 ",
+                    length(sr_pitcher_list()), " pitchers in scope"))
+  })
+
+  output$sr_status_ui <- renderUI({
+    n <- length(input$sr_players %||% character(0))
+    s <- length(input$sr_sections %||% character(0))
+    tags$div(class="section-sub",
+             paste0(n, " pitcher", if (n==1) "" else "s", " \u00b7 ",
+                    s, " section", if (s==1) "" else "s", " selected"))
+  })
+
+  # ── Metric builders ────────────────────────────────────────────────────────
+  sr_pct <- function(x) ifelse(is.finite(x), paste0(round(x*100,1),"%"), "\u2014")
+  sr_num <- function(x, d=1) ifelse(is.finite(x), as.character(round(x,d)), "\u2014")
+
+  sr_results_tbl <- function(d, ...) {
+    d %>% group_by(...) %>%
+      summarise(
+        Pitches = n(),
+        PA  = sum(PACheck, na.rm=TRUE),
+        AB  = sum(ABCheck, na.rm=TRUE),
+        H   = sum(HCheck, na.rm=TRUE),
+        `1B`= sum(PlayResult=="Single",  na.rm=TRUE),
+        `2B`= sum(PlayResult=="Double",  na.rm=TRUE),
+        `3B`= sum(PlayResult=="Triple",  na.rm=TRUE),
+        HR  = sum(PlayResult=="HomeRun", na.rm=TRUE),
+        SO  = sum(StrikeoutCheck, na.rm=TRUE),
+        BB  = sum(WalkCheck, na.rm=TRUE),
+        csw = mean(CSWCheck, na.rm=TRUE),
+        sw  = sum(SwingCheck, na.rm=TRUE),
+        wh  = sum(WhiffCheck, na.rm=TRUE),
+        woba_sum = sum(wOBAcon, na.rm=TRUE),
+        woba_n   = sum(!is.na(wOBAcon)),
+        .groups="drop"
+      ) %>%
+      mutate(
+        TB   = `1B` + 2*`2B` + 3*`3B` + 4*HR,
+        AVG  = ifelse(AB>0, sprintf("%.3f", H/AB), "\u2014"),
+        OBP  = ifelse(PA>0, sprintf("%.3f", (H+BB)/PA), "\u2014"),
+        SLG  = ifelse(AB>0, sprintf("%.3f", TB/AB), "\u2014"),
+        `K%`  = sr_pct(ifelse(PA>0, SO/PA, NA)),
+        `BB%` = sr_pct(ifelse(PA>0, BB/PA, NA)),
+        `CSW%`   = sr_pct(csw),
+        `Whiff%` = sr_pct(ifelse(sw>0, wh/sw, NA)),
+        wOBA     = ifelse(woba_n>0, sprintf("%.3f", woba_sum/woba_n), "\u2014")
+      ) %>%
+      dplyr::select(-csw,-sw,-wh,-TB,-`1B`,-`2B`,-`3B`,-AB,-woba_sum,-woba_n)
+  }
+
+  sr_pd_tbl <- function(d, ...) {
+    d %>% group_by(...) %>%
+      summarise(
+        Pitches = n(),
+        zone    = mean(ZoneCheck, na.rm=TRUE),
+        z_n     = sum(ZoneCheck, na.rm=TRUE),
+        z_sw    = sum(SwingCheck & ZoneCheck, na.rm=TRUE),
+        z_wh    = sum(WhiffCheck & ZoneCheck, na.rm=TRUE),
+        o_n     = sum(!ZoneCheck, na.rm=TRUE),
+        o_sw    = sum(SwingCheck & !ZoneCheck, na.rm=TRUE),
+        o_wh    = sum(WhiffCheck & !ZoneCheck, na.rm=TRUE),
+        sw      = sum(SwingCheck, na.rm=TRUE),
+        wh      = sum(WhiffCheck, na.rm=TRUE),
+        csw     = mean(CSWCheck, na.rm=TRUE),
+        .groups="drop"
+      ) %>%
+      mutate(
+        `Zone%`       = sr_pct(zone),
+        `Swing%`      = sr_pct(ifelse(Pitches>0, sw/Pitches, NA)),
+        `Z-Swing%`    = sr_pct(ifelse(z_n>0, z_sw/z_n, NA)),
+        `Z-Contact%`  = sr_pct(ifelse(z_sw>0, (z_sw-z_wh)/z_sw, NA)),
+        `Chase%`      = sr_pct(ifelse(o_n>0, o_sw/o_n, NA)),
+        `O-Contact%`  = sr_pct(ifelse(o_sw>0, (o_sw-o_wh)/o_sw, NA)),
+        `Whiff%`      = sr_pct(ifelse(sw>0, wh/sw, NA)),
+        `CSW%`        = sr_pct(csw)
+      ) %>%
+      dplyr::select(-zone,-z_n,-z_sw,-z_wh,-o_n,-o_sw,-o_wh,-sw,-wh,-csw)
+  }
+
+  sr_bb_tbl <- function(d, ...) {
+    d %>%
+      filter(TaggedHitType %in% c("GroundBall","LineDrive","FlyBall","Popup")) %>%
+      mutate(EV = suppressWarnings(as.numeric(ExitSpeed)),
+             LA = suppressWarnings(as.numeric(Angle))) %>%
+      group_by(...) %>%
+      summarise(
+        BBE = n(),
+        gb  = sum(TaggedHitType=="GroundBall", na.rm=TRUE),
+        fb  = sum(TaggedHitType=="FlyBall",    na.rm=TRUE),
+        ld  = sum(TaggedHitType=="LineDrive",  na.rm=TRUE),
+        pu  = sum(TaggedHitType=="Popup",      na.rm=TRUE),
+        ev_avg = mean(EV, na.rm=TRUE),
+        ev_max = suppressWarnings(max(EV, na.rm=TRUE)),
+        la_avg = mean(LA, na.rm=TRUE),
+        hh  = sum(EV >= 90, na.rm=TRUE),
+        brl = sum(EV >= 90 & LA >= 8 & LA <= 32, na.rm=TRUE),
+        ev_n = sum(!is.na(EV)),
+        .groups="drop"
+      ) %>%
+      mutate(
+        `GB%`      = sr_pct(gb/BBE),
+        `LD%`      = sr_pct(ld/BBE),
+        `FB%`      = sr_pct(fb/BBE),
+        `PU%`      = sr_pct(pu/BBE),
+        `Avg EV`   = sr_num(ev_avg),
+        `Max EV`   = sr_num(ev_max),
+        `Avg LA`   = sr_num(la_avg),
+        `HardHit%` = sr_pct(ifelse(ev_n>0, hh/ev_n, NA)),
+        `Barrel%`  = sr_pct(ifelse(ev_n>0, brl/ev_n, NA))
+      ) %>%
+      dplyr::select(-gb,-fb,-ld,-pu,-ev_avg,-ev_max,-la_avg,-hh,-brl,-ev_n)
+  }
+
+  sr_arsenal_tbl <- function(d) {
+    d %>% group_by(Pitch) %>%
+      summarise(
+        Pitches = n(),
+        `Avg Velo` = sr_num(mean(RelSpeed, na.rm=TRUE)),
+        `Max Velo` = sr_num(suppressWarnings(max(RelSpeed, na.rm=TRUE))),
+        Spin = sr_num(mean(SpinRate, na.rm=TRUE), 0),
+        IVB  = sr_num(mean(InducedVertBreak, na.rm=TRUE)),
+        HB   = sr_num(mean(HorzBreak, na.rm=TRUE)),
+        `Rel H` = sr_num(mean(RelHeight, na.rm=TRUE), 2),
+        `Rel S` = sr_num(mean(RelSide, na.rm=TRUE), 2),
+        csw = mean(CSWCheck, na.rm=TRUE),
+        sw  = sum(SwingCheck, na.rm=TRUE),
+        wh  = sum(WhiffCheck, na.rm=TRUE),
+        .groups="drop"
+      ) %>%
+      mutate(Usage = sr_pct(Pitches/sum(Pitches)),
+             `CSW%` = sr_pct(csw),
+             `Whiff%` = sr_pct(ifelse(sw>0, wh/sw, NA))) %>%
+      dplyr::select(Pitch, Pitches, Usage, `Avg Velo`, `Max Velo`, Spin,
+                    IVB, HB, `Rel H`, `Rel S`, `CSW%`, `Whiff%`) %>%
+      arrange(desc(Pitches))
+  }
+
+  sr_velo_spin_tbl <- function(d) {
+    d %>% group_by(Pitch) %>%
+      summarise(
+        N = n(),
+        `Avg Velo` = sr_num(mean(RelSpeed, na.rm=TRUE)),
+        `Max Velo` = sr_num(suppressWarnings(max(RelSpeed, na.rm=TRUE))),
+        `Velo SD`  = sr_num(sd(RelSpeed, na.rm=TRUE), 2),
+        `Avg Spin` = sr_num(mean(SpinRate, na.rm=TRUE), 0),
+        `Max Spin` = sr_num(suppressWarnings(max(SpinRate, na.rm=TRUE)), 0),
+        `Extension`= sr_num(mean(suppressWarnings(as.numeric(Extension)), na.rm=TRUE), 2),
+        IVB = sr_num(mean(InducedVertBreak, na.rm=TRUE)),
+        HB  = sr_num(mean(HorzBreak, na.rm=TRUE)),
+        .groups="drop"
+      ) %>% arrange(desc(N))
+  }
+
+  sr_kpi_row <- function(d) {
+    pa  <- sum(d$PACheck, na.rm=TRUE)
+    sw  <- sum(d$SwingCheck, na.rm=TRUE)
+    ozn <- sum(!d$ZoneCheck, na.rm=TRUE)
+    k   <- sum(d$StrikeoutCheck, na.rm=TRUE)
+    bb  <- sum(d$WalkCheck, na.rm=TRUE)
+    wn  <- sum(!is.na(d$wOBAcon))
+    bbe <- d[d$TaggedHitType %in% c("GroundBall","LineDrive","FlyBall","Popup"), , drop=FALSE]
+    ev  <- suppressWarnings(as.numeric(bbe$ExitSpeed))
+    ev  <- ev[!is.na(ev)]
+    data.frame(
+      Pitches  = format(nrow(d), big.mark=","),
+      PA       = pa,
+      `K%`     = sr_pct(ifelse(pa>0, k/pa, NA)),
+      `BB%`    = sr_pct(ifelse(pa>0, bb/pa, NA)),
+      `K-BB%`  = sr_pct(ifelse(pa>0, (k-bb)/pa, NA)),
+      `CSW%`   = sr_pct(mean(d$CSWCheck, na.rm=TRUE)),
+      `Whiff%` = sr_pct(ifelse(sw>0, sum(d$WhiffCheck,na.rm=TRUE)/sw, NA)),
+      `Zone%`  = sr_pct(mean(d$ZoneCheck, na.rm=TRUE)),
+      `Chase%` = sr_pct(ifelse(ozn>0, sum(d$SwingCheck & !d$ZoneCheck, na.rm=TRUE)/ozn, NA)),
+      `HardHit%` = sr_pct(if (length(ev)>0) mean(ev >= 90) else NA),
+      wOBA     = ifelse(wn>0, sprintf("%.3f", sum(d$wOBAcon, na.rm=TRUE)/wn), "\u2014"),
+      check.names = FALSE, stringsAsFactors = FALSE
+    )
+  }
+
+  sr_hm_plot <- function(d, title_str) {
+    d <- d %>% filter(!is.na(PlateLocSide), !is.na(PlateLocHeight))
+    if (nrow(d) < 5)
+      return(ggplot() + annotate("text",x=0,y=0,label="Insufficient data",
+                                 color="#8892b0",size=5) + theme_navs() +
+             labs(title=title_str) +
+             theme(axis.text=element_blank(),axis.title=element_blank(),
+                   panel.grid=element_blank()))
+    keep <- d %>% count(Pitch) %>% filter(n >= 5) %>% pull(Pitch)
+    d <- d %>% filter(Pitch %in% keep)
+    if (nrow(d) < 5)
+      return(ggplot() + annotate("text",x=0,y=0,label="Insufficient data",
+                                 color="#8892b0",size=5) + theme_navs() +
+             labs(title=title_str) +
+             theme(axis.text=element_blank(),axis.title=element_blank(),
+                   panel.grid=element_blank()))
+    ggplot(d, aes(x=PlateLocSide, y=PlateLocHeight)) +
+      stat_density_2d(aes(fill=after_stat(density)), geom="raster", contour=FALSE) +
+      scale_fill_gradientn(colours=heat_fills, guide="none") +
+      annotate("rect", xmin=-1, xmax=1, ymin=1.6, ymax=3.4,
+               fill=NA, color="#ffffff", linewidth=.6) +
+      facet_wrap(~Pitch) +
+      xlim(-2,2) + ylim(1,4) +
+      labs(title=title_str, x="Horizontal (Pitcher's View)", y="Vertical") +
+      theme_navs()
+  }
+
+  # ── Item builder: one named list entry per selected section ────────────────
+  sr_build_items <- function(d, sections) {
+    min_n <- max(1, as.integer(input$sr_min_n %||% 3))
+    out <- list()
+    add <- function(key, type, title, data=NULL, plot=NULL) {
+      out[[key]] <<- list(type=type, title=title, data=data, plot=plot)
+    }
+    if ("kpi" %in% sections)
+      add("kpi","table","Summary", data=sr_kpi_row(d))
+    if ("arsenal" %in% sections)
+      add("arsenal","table","Pitch Arsenal", data=sr_arsenal_tbl(d))
+    if ("res_pt" %in% sections)
+      add("res_pt","table","Results by Pitch Type",
+          data=sr_results_tbl(d, Pitch) %>% filter(Pitches>=min_n))
+    if ("res_lr" %in% sections)
+      add("res_lr","table","Results vs L/R",
+          data=sr_results_tbl(d, Side=BatterSide))
+    if ("res_pt_lr" %in% sections)
+      add("res_pt_lr","table","Results by Pitch Type x Handedness",
+          data=sr_results_tbl(d, Pitch, Side=BatterSide) %>% filter(Pitches>=min_n))
+    if ("pd_pt_lr" %in% sections)
+      add("pd_pt_lr","table","Plate Discipline by Pitch Type x Handedness",
+          data=sr_pd_tbl(d, Pitch, Side=BatterSide) %>% filter(Pitches>=min_n))
+    if ("bb_pt_lr" %in% sections)
+      add("bb_pt_lr","table","Batted Ball by Pitch Type x Handedness",
+          data=sr_bb_tbl(d, Pitch, Side=BatterSide) %>% filter(BBE>=1))
+    if ("velo_spin" %in% sections)
+      add("velo_spin","table","Velocity & Spin", data=sr_velo_spin_tbl(d))
+    if ("movement" %in% sections)
+      add("movement","plot","Pitch Movement", plot=
+        ggplot(d %>% filter(!is.na(HorzBreak), !is.na(InducedVertBreak)),
+               aes(x=HorzBreak, y=InducedVertBreak, color=Pitch)) +
+          geom_hline(yintercept=0, color="#2a2d3a", linewidth=.8) +
+          geom_vline(xintercept=0, color="#2a2d3a", linewidth=.8) +
+          geom_point(alpha=.7, size=1.8) +
+          scale_color_manual(values=sr_pitch_pal(d$Pitch), na.value="#94a3b8") +
+          labs(title="Pitch Movement", x="Horizontal Break (in)",
+               y="Induced Vertical Break (in)", color=NULL) +
+          theme_navs())
+    if ("release" %in% sections)
+      add("release","plot","Release Points", plot=
+        ggplot(d %>% filter(!is.na(RelSide), !is.na(RelHeight)),
+               aes(x=RelSide, y=RelHeight, color=Pitch)) +
+          geom_point(alpha=.7, size=1.8) +
+          scale_color_manual(values=sr_pitch_pal(d$Pitch), na.value="#94a3b8") +
+          labs(title="Release Points", x="Release Side (ft)",
+               y="Release Height (ft)", color=NULL) +
+          theme_navs())
+    if ("hm_r" %in% sections)
+      add("hm_r","plot","Locations vs RHH",
+          plot=sr_hm_plot(d %>% filter(BatterSide=="Right"), "Locations vs RHH"))
+    if ("hm_l" %in% sections)
+      add("hm_l","plot","Locations vs LHH",
+          plot=sr_hm_plot(d %>% filter(BatterSide=="Left"), "Locations vs LHH"))
+    if ("hm_c" %in% sections)
+      add("hm_c","plot","Locations (Combined)",
+          plot=sr_hm_plot(d, "Locations (Combined)"))
+    out[sections[sections %in% names(out)]]
+  }
+
+  # ── Preview ────────────────────────────────────────────────────────────────
+  # Static HTML table so the preview stays inside a single renderUI instead of
+  # spawning one DT output per section per pitcher.
+  sr_html_tbl <- function(df) {
+    if (is.null(df) || nrow(df)==0)
+      return(tags$p(style="color:#8892b0;font-size:12px;","No rows."))
+    df[] <- lapply(df, as.character)
+    tags$div(style="overflow-x:auto;margin-bottom:14px;",
+      tags$table(class="sr-tbl",
+        tags$thead(tags$tr(lapply(names(df), function(n) tags$th(n)))),
+        tags$tbody(lapply(seq_len(nrow(df)), function(i)
+          tags$tr(lapply(seq_len(ncol(df)), function(j) tags$td(df[i,j])))))
+      ))
+  }
+
+  sr_preview_data <- reactive({
+    req(input$sr_players, length(input$sr_players)>0)
+    secs <- input$sr_sections %||% character(0)
+    req(length(secs)>0)
+    d_all <- sr_scoped(); req(!is.null(d_all), nrow(d_all)>0)
+    players <- head(input$sr_players, 5)
+    res <- lapply(players, function(pl) {
+      d <- d_all %>% filter(Pitcher == pl)
+      if (nrow(d)==0) return(NULL)
+      list(player=pl, n=nrow(d), items=sr_build_items(d, secs))
+    })
+    Filter(Negate(is.null), res)
+  })
+
+  output$sr_preview_ui <- renderUI({
+    pv <- sr_preview_data()
+    if (length(pv)==0)
+      return(tags$p(style="color:#8892b0;","Select at least one pitcher and one section."))
+    tagList(lapply(seq_along(pv), function(i) {
+      pl <- pv[[i]]
+      tagList(
+        tags$div(class="section-header",
+                 paste0(pl$player, "  \u00b7  ", format(pl$n, big.mark=","), " pitches")),
+        lapply(seq_along(pl$items), function(j) {
+          it <- pl$items[[j]]
+          if (identical(it$type,"table")) {
+            tagList(tags$div(class="section-sub", it$title), sr_html_tbl(it$data))
+          } else {
+            tagList(tags$div(class="section-sub", it$title),
+                    plotOutput(paste0("sr_pv_",i,"_",j), height="380px"))
+          }
+        }),
+        tags$hr()
+      )
+    }))
+  })
+
+  # Plot outputs are registered separately; renderUI only emits the placeholders.
+  observe({
+    pv <- sr_preview_data()
+    for (i in seq_along(pv)) {
+      for (j in seq_along(pv[[i]]$items)) {
+        local({
+          ii <- i; jj <- j
+          it <- pv[[ii]]$items[[jj]]
+          if (identical(it$type,"plot") && !is.null(it$plot))
+            output[[paste0("sr_pv_",ii,"_",jj)]] <- renderPlot({ it$plot })
+        })
+      }
+    }
+  })
+
+  # ── PDF export ─────────────────────────────────────────────────────────────
+  output$sr_download <- downloadHandler(
+    filename = function() {
+      paste0("Navs_PitcherScoutingReport_", sr_season(), "_",
+             format(Sys.Date(), "%Y%m%d"), ".pdf")
+    },
+    content = function(file) {
+      players  <- input$sr_players %||% character(0)
+      sections <- input$sr_sections %||% character(0)
+      if (length(players)==0 || length(sections)==0) {
+        showNotification("Pick at least one pitcher and one section.", type="warning")
+        return(invisible())
+      }
+      d_all <- sr_scoped()
+      req(!is.null(d_all), nrow(d_all)>0)
+
+      scope_txt <- {
+        dts <- sort(unique(d_all$Date))
+        if (length(dts)==0) "" else
+          paste0(format(min(dts),"%b %d"), " \u2013 ", format(max(dts),"%b %d, %Y"),
+                 "  (", length(dts), " outings)")
+      }
+
+      # Table rendered as a ggplot so it can share a page with charts.
+      make_tbl_plot <- function(tbl, title_str, fsize=3, title_size=10) {
+        tbl <- as.data.frame(tbl, check.names=FALSE)
+        tbl[] <- lapply(tbl, as.character)
+        n_cols <- ncol(tbl); n_rows <- nrow(tbl)
+        if (n_cols==0 || n_rows==0)
+          return(ggplot() + labs(title=title_str) + theme_void())
+        tbl_long <- data.frame(
+          x = rep(seq_len(n_cols), each=n_rows+1),
+          y = rep(c(n_rows+1, seq(n_rows,1)), n_cols),
+          label = c(rbind(names(tbl), do.call(cbind, lapply(tbl, as.character)))),
+          is_header = rep(c(TRUE, rep(FALSE,n_rows)), n_cols),
+          stringsAsFactors=FALSE
+        )
+        ggplot(tbl_long, aes(x=x, y=y, label=label)) +
+          geom_tile(aes(fill=is_header), color="grey70", linewidth=0.3) +
+          geom_text(aes(fontface=ifelse(is_header,"bold","plain"),
+                        color=ifelse(is_header,"#222222","#333333")),
+                    size=fsize, hjust=0.5) +
+          scale_fill_manual(values=c("FALSE"="white","TRUE"="#e8e8e8"), guide="none") +
+          scale_color_identity() +
+          labs(title=title_str) +
+          theme_void(base_size=9) +
+          theme(plot.title=element_text(face="bold", size=title_size, hjust=0,
+                                        margin=margin(b=6)),
+                plot.margin=margin(10,10,10,10),
+                plot.background=element_rect(fill="white", color=NA))
+      }
+
+      page_header <- function(txt) {
+        grid::pushViewport(grid::viewport(x=0.5, y=0.965, width=1, height=0.07,
+                                          just="center"))
+        grid::grid.rect(gp=grid::gpar(fill="#111111", col=NA))
+        grid::grid.text(txt, x=0.5, y=0.5,
+                        gp=grid::gpar(fontsize=13, col="white", fontface="bold"))
+        grid::popViewport()
+      }
+
+      # The app is dark-themed; print needs white.
+      to_print_theme <- function(p) {
+        p + theme(plot.background=element_rect(fill="white", color=NA),
+                  panel.background=element_rect(fill="white", color=NA),
+                  panel.grid.major=element_line(color="grey85"),
+                  panel.grid.minor=element_blank(),
+                  axis.text=element_text(color="#333333"),
+                  axis.title=element_text(color="#222222"),
+                  plot.title=element_text(color="#111111"),
+                  plot.subtitle=element_text(color="#444444"),
+                  legend.background=element_rect(fill="white", color=NA),
+                  legend.key=element_rect(fill="white", color=NA),
+                  legend.text=element_text(color="#333333"),
+                  strip.background=element_rect(fill="grey90", color=NA),
+                  strip.text=element_text(color="#222222"))
+      }
+
+      sec_label <- function(sec) {
+        lbl <- names(sr_sections_all)[match(sec, sr_sections_all)]
+        if (length(lbl)==0 || is.na(lbl)) sec else lbl
+      }
+
+      hdr <- function(player) {
+        paste0(player, "    |    North Shore Navigators    |    ", sr_season(),
+               " Scouting Report", if (nzchar(scope_txt)) paste0("    |    ", scope_txt) else "",
+               "    |    ", format(Sys.Date(), "%b %d, %Y"))
+      }
+
+      layout <- input$sr_layout %||% "player"
+      pdf(file, width=17, height=11, onefile=TRUE)
+      on.exit(dev.off(), add=TRUE)
+
+      built <- lapply(players, function(pl) {
+        d <- d_all %>% filter(Pitcher == pl)
+        if (nrow(d)==0) return(NULL)
+        list(player=pl, items=sr_build_items(d, sections))
+      })
+      built <- Filter(function(x) !is.null(x) && length(x$items)>0, built)
+
+      if (layout == "combined") {
+        # One page per section, every pitcher stacked into a single table.
+        for (sec in sections) {
+          tbls <- lapply(built, function(x) {
+            it <- x$items[[sec]]
+            if (is.null(it) || it$type != "table" || is.null(it$data) ||
+                nrow(it$data)==0) return(NULL)
+            df <- as.data.frame(it$data, check.names=FALSE)
+            df[] <- lapply(df, as.character)
+            cbind(Pitcher=x$player, df)
+          })
+          tbls <- Filter(Negate(is.null), tbls)
+          if (length(tbls) > 0) {
+            keys <- unique(unlist(lapply(tbls, names)))
+            tbls <- lapply(tbls, function(df) {
+              miss <- setdiff(keys, names(df))
+              for (m in miss) df[[m]] <- "\u2014"
+              df[, keys, drop=FALSE]
+            })
+            big <- do.call(rbind, tbls)
+            n_r <- nrow(big)
+            chunk <- 26
+            for (start in seq(1, n_r, by=chunk)) {
+              part <- big[start:min(start+chunk-1, n_r), , drop=FALSE]
+              grid::grid.newpage()
+              page_header(paste0(sec_label(sec), "    |    North Shore Navigators    |    ",
+                                 sr_season(),
+                                 if (nzchar(scope_txt)) paste0("    |    ", scope_txt) else ""))
+              print(make_tbl_plot(part, sec_label(sec), fsize=3.4, title_size=12),
+                    vp=grid::viewport(x=0.5, y=0.46, width=0.94, height=0.88))
+            }
+          } else {
+            # Plot sections can't be merged — one page per pitcher instead.
+            for (x in built) {
+              it <- x$items[[sec]]
+              if (is.null(it) || it$type != "plot" || is.null(it$plot)) next
+              grid::grid.newpage()
+              page_header(hdr(x$player))
+              print(to_print_theme(it$plot),
+                    vp=grid::viewport(x=0.5, y=0.46, width=0.94, height=0.88))
+            }
+          }
+        }
+      } else {
+        for (x in built) {
+          player <- x$player
+          plot_list <- x$items
+          single_mode <- (layout == "single")
+          gg_items <- lapply(names(plot_list), function(nm) {
+            it <- plot_list[[nm]]
+            if (it$type == "plot" && !is.null(it$plot)) {
+              to_print_theme(it$plot)
+            } else if (it$type == "table" && !is.null(it$data) && nrow(it$data) > 0) {
+              make_tbl_plot(it$data, it$title,
+                            fsize = if (single_mode) 5.2
+                                    else if (length(plot_list) <= 2) 4.6
+                                    else if (length(plot_list) <= 4) 3.8 else 3)
+            } else NULL
+          })
+          gg_items <- Filter(Negate(is.null), gg_items)
+          if (length(gg_items) == 0) next
+          n_items <- length(gg_items)
+
+          if (single_mode) {
+            for (i in seq_len(n_items)) {
+              grid::grid.newpage()
+              page_header(hdr(player))
+              print(gg_items[[i]],
+                    vp=grid::viewport(x=0.5, y=0.46, width=0.94, height=0.88))
+            }
+            next
+          }
+
+          ncol <- max(1, ceiling(sqrt(n_items)))
+          nrow_ <- max(1, ceiling(n_items / ncol))
+          grid::grid.newpage()
+          page_header(hdr(player))
+          grid::pushViewport(grid::viewport(x=0.5, y=0.46, width=0.98, height=0.90))
+          gap <- 0.008; cell_w <- 1/ncol; cell_h <- 1/nrow_
+          for (i in seq_len(n_items)) {
+            r <- ceiling(i / ncol)
+            cc <- i - (r-1)*ncol
+            print(gg_items[[i]],
+                  vp=grid::viewport(x=(cc-0.5)*cell_w, y=1-(r-0.5)*cell_h,
+                                    width=cell_w-gap, height=cell_h-gap,
+                                    just="center"))
+          }
+          grid::popViewport()
+        }
+      }
+    }
+  )
 }
 
 shinyApp(ui=ui, server=server)

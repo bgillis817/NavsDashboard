@@ -86,10 +86,17 @@ sr_pitch_pal <- function(levels) {
 sr_sections_all <- c(
   "Summary Cards"                    = "kpi",
   "Arsenal Table"                    = "arsenal",
+  "Results (Cumulative)"             = "res_all",
   "Results by Pitch Type"            = "res_pt",
   "Results vs L/R"                   = "res_lr",
   "Results by Pitch x Hand"          = "res_pt_lr",
+  "Plate Discipline (Cumulative)"    = "pd_all",
+  "Plate Discipline by Pitch Type"   = "pd_pt",
+  "Plate Discipline vs L/R"          = "pd_lr",
   "Plate Discipline by Pitch x Hand" = "pd_pt_lr",
+  "Batted Ball (Cumulative)"         = "bb_all",
+  "Batted Ball by Pitch Type"        = "bb_pt",
+  "Batted Ball vs L/R"               = "bb_lr",
   "Batted Ball by Pitch x Hand"      = "bb_pt_lr",
   "Velocity & Spin Table"            = "velo_spin",
   "Movement Chart"                   = "movement",
@@ -2399,6 +2406,9 @@ server <- function(input, output, session) {
       add("kpi","table","Summary", data=sr_kpi_row(d))
     if ("arsenal" %in% sections)
       add("arsenal","table","Pitch Arsenal", data=sr_arsenal_tbl(d))
+    if ("res_all" %in% sections)
+      add("res_all","table","Results (Cumulative)",
+          data=sr_results_tbl(d %>% mutate(Split="All"), Split))
     if ("res_pt" %in% sections)
       add("res_pt","table","Results by Pitch Type",
           data=sr_results_tbl(d, Pitch) %>% filter(Pitches>=min_n))
@@ -2408,9 +2418,27 @@ server <- function(input, output, session) {
     if ("res_pt_lr" %in% sections)
       add("res_pt_lr","table","Results by Pitch Type x Handedness",
           data=sr_results_tbl(d, Pitch, Side=BatterSide) %>% filter(Pitches>=min_n))
+    if ("pd_all" %in% sections)
+      add("pd_all","table","Plate Discipline (Cumulative)",
+          data=sr_pd_tbl(d %>% mutate(Split="All"), Split))
+    if ("pd_pt" %in% sections)
+      add("pd_pt","table","Plate Discipline by Pitch Type",
+          data=sr_pd_tbl(d, Pitch) %>% filter(Pitches>=min_n))
+    if ("pd_lr" %in% sections)
+      add("pd_lr","table","Plate Discipline vs L/R",
+          data=sr_pd_tbl(d, Side=BatterSide))
     if ("pd_pt_lr" %in% sections)
       add("pd_pt_lr","table","Plate Discipline by Pitch Type x Handedness",
           data=sr_pd_tbl(d, Pitch, Side=BatterSide) %>% filter(Pitches>=min_n))
+    if ("bb_all" %in% sections)
+      add("bb_all","table","Batted Ball (Cumulative)",
+          data=sr_bb_tbl(d %>% mutate(Split="All"), Split))
+    if ("bb_pt" %in% sections)
+      add("bb_pt","table","Batted Ball by Pitch Type",
+          data=sr_bb_tbl(d, Pitch) %>% filter(BBE>=1))
+    if ("bb_lr" %in% sections)
+      add("bb_lr","table","Batted Ball vs L/R",
+          data=sr_bb_tbl(d, Side=BatterSide))
     if ("bb_pt_lr" %in% sections)
       add("bb_pt_lr","table","Batted Ball by Pitch Type x Handedness",
           data=sr_bb_tbl(d, Pitch, Side=BatterSide) %>% filter(BBE>=1))

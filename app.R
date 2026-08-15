@@ -2130,8 +2130,12 @@ server <- function(input, output, session) {
         ))
   })
 
+  # Only the dates the selected pitchers actually threw. Falls back to every
+  # date in the season while nothing is selected yet.
   sr_all_dates <- reactive({
     d <- sr_raw(); if (is.null(d)) return(as.Date(character(0)))
+    sel <- input$sr_players
+    if (!is.null(sel) && length(sel) > 0) d <- d %>% filter(Pitcher %in% sel)
     sort(unique(d$Date))
   })
 
@@ -2143,9 +2147,12 @@ server <- function(input, output, session) {
 
   output$sr_date_pick_ui <- renderUI({
     dts <- sr_all_dates(); req(length(dts)>0)
-    lbl <- format(dts, "%b %d, %Y")
+    lbl  <- format(dts, "%b %d, %Y")
+    prev <- isolate(input$sr_dates_pick)
+    keep <- intersect(prev, as.character(dts))
     selectizeInput("sr_dates_pick","Outings", choices=setNames(as.character(dts), lbl),
-                   selected=as.character(dts), multiple=TRUE,
+                   selected=if (length(keep)) keep else as.character(dts),
+                   multiple=TRUE,
                    options=list(plugins=list("remove_button")))
   })
 
@@ -2165,7 +2172,7 @@ server <- function(input, output, session) {
   })
 
   sr_pitcher_list <- reactive({
-    d <- sr_scoped(); if (is.null(d) || nrow(d)==0) return(character(0))
+    d <- sr_raw(); if (is.null(d) || nrow(d)==0) return(character(0))
     sort(unique(d$Pitcher))
   })
 
@@ -2559,12 +2566,15 @@ server <- function(input, output, session) {
       d_all <- sr_scoped()
       req(!is.null(d_all), nrow(d_all)>0)
 
-      scope_txt <- {
-        dts <- sort(unique(d_all$Date))
-        if (length(dts)==0) "" else
-          paste0(format(min(dts),"%b %d"), " \u2013 ", format(max(dts),"%b %d, %Y"),
-                 "  (", length(dts), " outings)")
+      # Date range shown in the header is the pitcher's own outings, not the
+      # team's schedule, and carries no outing count.
+      scope_for <- function(d) {
+        dts <- sort(unique(d$Date))
+        if (length(dts)==0) return("")
+        if (length(dts)==1) return(format(dts[1], "%b %d, %Y"))
+        paste0(format(min(dts),"%b %d"), " \u2013 ", format(max(dts),"%b %d, %Y"))
       }
+      scope_txt <- scope_for(d_all)
 
       # Table rendered as a ggplot so it can share a page with charts.
       make_tbl_plot <- function(tbl, title_str, fsize=3, title_size=10) {
@@ -2627,8 +2637,9 @@ server <- function(input, output, session) {
       }
 
       hdr <- function(player) {
+        rng <- scope_for(d_all %>% filter(Pitcher == player))
         paste0(player, "    |    North Shore Navigators    |    ", sr_season(),
-               " Scouting Report", if (nzchar(scope_txt)) paste0("    |    ", scope_txt) else "",
+               " Scouting Report", if (nzchar(rng)) paste0("    |    ", rng) else "",
                "    |    ", format(Sys.Date(), "%b %d, %Y"))
       }
 
